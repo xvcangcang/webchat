@@ -1012,6 +1012,13 @@ body {
   .back-btn { display: flex !important; }
 
   .msg-group { max-width: 85%; }
+
+  .settings-modal { width: 95vw; }
+  .settings-layout { flex-direction: column; min-height: auto; }
+  .settings-nav { width: 100%; min-width: auto; border-radius: 12px 12px 0 0; }
+  .settings-nav-items { display: flex; padding: 4px; gap: 4px; overflow-x: auto; }
+  .settings-nav-item { white-space: nowrap; font-size: 12px; padding: 8px 10px; }
+  .settings-content { max-height: 50vh; }
 }
 
 @media (min-width: 769px) {
