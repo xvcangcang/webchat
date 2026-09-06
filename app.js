@@ -1,5 +1,5 @@
 // ============================================
-// WebChat — 主应用逻辑
+// WebChat — 主应用逻辑  v1.1
 // ============================================
 
 // ---------- 全局状态 ----------
@@ -8,8 +8,8 @@ const state = {
   myId: null,
   myName: '',
   myColor: '',
-  contacts: [],           // { contact_id, remark, display_name, avatar_color }
-  conversations: [],      // { id, type, name, avatar_color, members[], lastMsg }
+  contacts: [],
+  conversations: [],
   currentConvId: null,
   messages: {},           // convId -> [msg]
   subscription: null,
@@ -35,6 +35,7 @@ function getInitial(name) {
 }
 
 function formatTime(ts) {
+  if (!ts) return '';
   const d = new Date(ts);
   const now = new Date();
   const pad = n => String(n).padStart(2, '0');
@@ -44,10 +45,12 @@ function formatTime(ts) {
   return `${d.getMonth()+1}/${d.getDate()} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
+// #8 fix: 复用同一个 DOM 元素，不再每次创建
+const _escEl = document.createElement('div');
 function escapeHtml(s) {
-  const el = document.createElement('div');
-  el.textContent = s;
-  return el.innerHTML;
+  if (!s) return '';
+  _escEl.textContent = s;
+  return _escEl.innerHTML;
 }
 
 function toast(msg, type = '') {
@@ -66,18 +69,9 @@ function initIdentity() {
   let name = localStorage.getItem('webchat_name');
   let color = localStorage.getItem('webchat_color');
 
-  if (!id) {
-    id = genUUID();
-    localStorage.setItem('webchat_id', id);
-  }
-  if (!name) {
-    name = '用户' + id.slice(0, 4);
-    localStorage.setItem('webchat_name', name);
-  }
-  if (!color) {
-    color = randomColor();
-    localStorage.setItem('webchat_color', color);
-  }
+  if (!id) { id = genUUID(); localStorage.setItem('webchat_id', id); }
+  if (!name) { name = '用户' + id.slice(0, 4); localStorage.setItem('webchat_name', name); }
+  if (!color) { color = randomColor(); localStorage.setItem('webchat_color', color); }
 
   state.myId = id;
   state.myName = name;
@@ -86,7 +80,6 @@ function initIdentity() {
 
 // ---------- Supabase 初始化 ----------
 async function initSupabase() {
-  // 从 config.js 读取 (SUPABASE_URL, SUPABASE_ANON_KEY 在全局)
   if (typeof SUPABASE_URL === 'undefined' || typeof SUPABASE_ANON_KEY === 'undefined') {
     toast('请先配置 config.js！参考 config.example.js', 'error');
     throw new Error('Missing config.js');
@@ -109,7 +102,7 @@ async function initSupabase() {
     toast('连接服务器失败', 'error');
   }
 
-  // 启动心跳
+  // 心跳
   setInterval(async () => {
     await state.supabase
       .from('users')
@@ -136,10 +129,10 @@ async function loadContacts() {
 }
 
 async function loadConversations() {
-  // 获取我参与的会话
+  // 1. 获取我参与的会话 ID
   const { data: memberships, error: e1 } = await state.supabase
     .from('conversation_members')
-    .select('conversation_id, role')
+    .select('conversation_id')
     .eq('user_id', state.myId);
 
   if (e1) { console.error('Load conv memberships error:', e1); return; }
@@ -147,38 +140,27 @@ async function loadConversations() {
   const convIds = (memberships || []).map(m => m.conversation_id);
   if (convIds.length === 0) { state.conversations = []; return; }
 
-  // 获取会话详情
-  const { data: convs, error: e2 } = await state.supabase
-    .from('conversations')
-    .select('*')
-    .in('id', convIds);
+  // #10 fix: 用 Promise.all 并行查询，而非串行等待
+  const [convsRes, membersRes, lastMsgRes] = await Promise.all([
+    state.supabase.from('conversations').select('*').in('id', convIds),
+    state.supabase.from('conversation_members')
+      .select('conversation_id, user_id, users(display_name, avatar_color)')
+      .in('conversation_id', convIds),
+    // #1 fix: 用视图只取每条会话的最后一条消息，不查全部
+    state.supabase.from('conversation_last_message')
+      .select('conversation_id, content, sender_id, created_at')
+      .in('conversation_id', convIds),
+  ]);
 
-  if (e2) { console.error('Load conversations error:', e2); return; }
-
-  // 获取每个会话的成员
-  const { data: allMembers, error: e3 } = await state.supabase
-    .from('conversation_members')
-    .select('conversation_id, user_id, users(display_name, avatar_color)')
-    .in('conversation_id', convIds);
-
-  if (e3) { console.error('Load members error:', e3); return; }
-
-  // 获取每个会话的最后一条消息
-  const { data: lastMsgs, error: e4 } = await state.supabase
-    .from('messages')
-    .select('conversation_id, content, sender_id, created_at')
-    .in('conversation_id', convIds)
-    .order('created_at', { ascending: false });
+  if (convsRes.error) { console.error('Load conversations error:', convsRes.error); return; }
 
   const lastMsgMap = {};
-  for (const msg of (lastMsgs || [])) {
-    if (!lastMsgMap[msg.conversation_id]) {
-      lastMsgMap[msg.conversation_id] = msg;
-    }
+  for (const msg of (lastMsgRes.data || [])) {
+    lastMsgMap[msg.conversation_id] = msg;
   }
 
-  state.conversations = (convs || []).map(conv => {
-    const members = (allMembers || [])
+  state.conversations = (convsRes.data || []).map(conv => {
+    const members = (membersRes.data || [])
       .filter(m => m.conversation_id === conv.id)
       .map(m => ({
         user_id: m.user_id,
@@ -190,7 +172,6 @@ async function loadConversations() {
     let displayName = conv.name;
     let avatarColor = conv.avatar_color;
 
-    // 私聊：显示对方名字
     if (conv.type === 'direct') {
       const other = members.find(m => m.user_id !== state.myId);
       if (other) {
@@ -206,15 +187,10 @@ async function loadConversations() {
       name: displayName || '未命名会话',
       avatar_color: avatarColor || '#999',
       members,
-      lastMsg: lastMsg ? {
-        content: lastMsg.content,
-        sender_id: lastMsg.sender_id,
-        time: lastMsg.created_at,
-      } : null,
+      lastMsg: lastMsg ? { content: lastMsg.content, sender_id: lastMsg.sender_id, time: lastMsg.created_at } : null,
     };
   });
 
-  // 按最后消息时间排序
   state.conversations.sort((a, b) => {
     const ta = a.lastMsg?.time || '0';
     const tb = b.lastMsg?.time || '0';
@@ -223,16 +199,15 @@ async function loadConversations() {
 }
 
 async function loadMessages(convId) {
-  if (state.messages[convId]) return state.messages[convId];
-
+  // #6 fix: 每次打开会话都刷新消息（实时订阅可能漏掉加入前的消息）
   const { data, error } = await state.supabase
     .from('messages')
     .select('id, sender_id, content, msg_type, created_at')
     .eq('conversation_id', convId)
     .order('created_at', { ascending: true })
-    .limit(200);
+    .limit(500);
 
-  if (error) { console.error('Load messages error:', error); return []; }
+  if (error) { console.error('Load messages error:', error); return state.messages[convId] || []; }
 
   state.messages[convId] = data || [];
   return state.messages[convId];
@@ -242,7 +217,6 @@ async function loadMessages(convId) {
 async function addContact(contactId) {
   if (contactId === state.myId) return { error: '不能添加自己' };
 
-  // 检查用户是否存在
   const { data: user, error: e1 } = await state.supabase
     .from('users')
     .select('id, display_name')
@@ -251,7 +225,6 @@ async function addContact(contactId) {
 
   if (e1 || !user) return { error: '用户不存在，请检查身份码' };
 
-  // 检查是否已是好友
   const exists = state.contacts.find(c => c.contact_id === contactId);
   if (exists) return { error: '该用户已经是好友了' };
 
@@ -266,20 +239,21 @@ async function addContact(contactId) {
   if (e2) { console.error('Add contact error:', e2); return { error: '添加失败，请重试' }; }
 
   await loadContacts();
+
+  // #2 fix: 添加好友后自动创建私聊会话
+  await getOrCreateDirectConversation(contactId);
+
   return { success: true, name: user.display_name };
 }
 
 // ---------- 会话操作 ----------
 async function getOrCreateDirectConversation(contactId) {
-  // 查找已有私聊
   const existing = state.conversations.find(conv => {
     if (conv.type !== 'direct') return false;
     return conv.members.some(m => m.user_id === contactId);
   });
-
   if (existing) return existing.id;
 
-  // 创建新会话
   const { data: conv, error: e1 } = await state.supabase
     .from('conversations')
     .insert({ type: 'direct', created_by: state.myId })
@@ -288,7 +262,6 @@ async function getOrCreateDirectConversation(contactId) {
 
   if (e1) { console.error('Create conv error:', e1); return null; }
 
-  // 添加成员
   const { error: e2 } = await state.supabase
     .from('conversation_members')
     .insert([
@@ -306,12 +279,7 @@ async function getOrCreateDirectConversation(contactId) {
 async function createGroupConversation(name, memberIds) {
   const { data: conv, error: e1 } = await state.supabase
     .from('conversations')
-    .insert({
-      type: 'group',
-      name: name,
-      avatar_color: randomColor(),
-      created_by: state.myId,
-    })
+    .insert({ type: 'group', name, avatar_color: randomColor(), created_by: state.myId })
     .select()
     .single();
 
@@ -324,21 +292,13 @@ async function createGroupConversation(name, memberIds) {
     role: uid === state.myId ? 'owner' : 'member',
   }));
 
-  const { error: e2 } = await state.supabase
-    .from('conversation_members')
-    .insert(members);
-
+  const { error: e2 } = await state.supabase.from('conversation_members').insert(members);
   if (e2) { console.error('Add group members error:', e2); return null; }
 
-  // 发送系统消息
-  await state.supabase
-    .from('messages')
-    .insert({
-      conversation_id: conv.id,
-      sender_id: state.myId,
-      content: `${state.myName} 创建了群聊`,
-      msg_type: 'system',
-    });
+  await state.supabase.from('messages').insert({
+    conversation_id: conv.id, sender_id: state.myId,
+    content: `${state.myName} 创建了群聊`, msg_type: 'system',
+  });
 
   await loadConversations();
   renderConversationList();
@@ -346,6 +306,10 @@ async function createGroupConversation(name, memberIds) {
 }
 
 async function addMemberToGroup(convId, userId) {
+  // #4 fix: 检查是否已在群中
+  const conv = state.conversations.find(c => c.id === convId);
+  if (conv?.members.some(m => m.user_id === userId)) return true; // 已在群中，跳过
+
   const { error } = await state.supabase
     .from('conversation_members')
     .insert({ conversation_id: convId, user_id: userId });
@@ -354,60 +318,60 @@ async function addMemberToGroup(convId, userId) {
 
   const user = state.contacts.find(c => c.contact_id === userId);
   const name = user?.remark || user?.display_name || '新成员';
-  await state.supabase
-    .from('messages')
-    .insert({
-      conversation_id: convId,
-      sender_id: state.myId,
-      content: `${state.myName} 邀请 ${name} 加入了群聊`,
-      msg_type: 'system',
-    });
+  await state.supabase.from('messages').insert({
+    conversation_id: convId, sender_id: state.myId,
+    content: `${state.myName} 邀请 ${name} 加入了群聊`, msg_type: 'system',
+  });
 
   return true;
 }
 
 async function leaveGroup(convId) {
-  await state.supabase
+  // #7 fix: 先发请求，成功后再修改本地状态
+  const { error } = await state.supabase
     .from('conversation_members')
     .delete()
     .eq('conversation_id', convId)
     .eq('user_id', state.myId);
+
+  if (error) { console.error('Leave group error:', error); return false; }
 
   delete state.messages[convId];
   state.currentConvId = null;
   await loadConversations();
   renderConversationList();
   renderChatEmpty();
+  return true;
 }
 
 // ---------- 发送消息 ----------
 async function sendMessage(content) {
   if (!content.trim() || !state.currentConvId) return;
 
-  const msg = {
-    conversation_id: state.currentConvId,
-    sender_id: state.myId,
-    content: content.trim(),
-    msg_type: 'text',
-  };
+  const trimmed = content.trim();
+  const convId = state.currentConvId;
 
   const { data, error } = await state.supabase
     .from('messages')
-    .insert(msg)
+    .insert({ conversation_id: convId, sender_id: state.myId, content: trimmed, msg_type: 'text' })
     .select()
     .single();
 
-  if (error) { console.error('Send error:', error); toast('发送失败', 'error'); return; }
+  // #3 fix: 发送失败时不清空输入框
+  if (error) {
+    console.error('Send error:', error);
+    toast('发送失败', 'error');
+    return false;
+  }
 
-  // 本地立即显示
-  if (!state.messages[state.currentConvId]) state.messages[state.currentConvId] = [];
-  state.messages[state.currentConvId].push(data);
-  renderMessages(state.currentConvId);
+  if (!state.messages[convId]) state.messages[convId] = [];
+  state.messages[convId].push(data);
+  renderMessages(convId);
   scrollMessagesToBottom();
 
-  // 更新会话列表排序
   await loadConversations();
   renderConversationList();
+  return true;
 }
 
 // ---------- 实时订阅 ----------
@@ -420,23 +384,18 @@ function subscribeRealtime() {
       table: 'messages',
     }, (payload) => {
       const msg = payload.new;
-      // 忽略自己发的（已经本地处理）
       if (msg.sender_id === state.myId) return;
 
-      // 存入本地
       if (!state.messages[msg.conversation_id]) state.messages[msg.conversation_id] = [];
       state.messages[msg.conversation_id].push(msg);
 
-      // 如果当前正在看这个会话，立即渲染
       if (state.currentConvId === msg.conversation_id) {
         renderMessages(msg.conversation_id);
         scrollMessagesToBottom();
       } else {
-        // 否则显示未读提示
         toast(`新消息: ${msg.content.slice(0, 30)}`);
       }
 
-      // 刷新会话列表
       loadConversations().then(() => renderConversationList());
     })
     .subscribe();
@@ -455,9 +414,7 @@ function renderConversationList() {
   const list = $('conversationList');
   const filter = $('searchInput').value.toLowerCase();
 
-  const filtered = state.conversations.filter(c =>
-    c.name.toLowerCase().includes(filter)
-  );
+  const filtered = state.conversations.filter(c => c.name.toLowerCase().includes(filter));
 
   if (filtered.length === 0) {
     list.innerHTML = '';
@@ -468,12 +425,11 @@ function renderConversationList() {
   list.innerHTML = filtered.map(conv => {
     const isActive = conv.id === state.currentConvId;
     const lastMsgText = conv.lastMsg?.content || '';
-    const lastMsgTime = conv.lastMsg?.time ? formatTime(conv.lastMsg.time) : '';
+    const lastMsgTime = formatTime(conv.lastMsg?.time);
     const isGroup = conv.type === 'group';
 
     let avatarHtml;
     if (isGroup && conv.members.length >= 2) {
-      const colors = conv.members.slice(0, 4).map(m => m.avatar_color);
       avatarHtml = `<div class="conv-avatar group-avatar" style="background:${conv.avatar_color}">
         ${conv.members.slice(0, 4).map(m =>
           `<span style="background:${m.avatar_color}">${getInitial(m.display_name)}</span>`
@@ -495,10 +451,11 @@ function renderConversationList() {
     </div>`;
   }).join('');
 
-  // 绑定点击
-  list.querySelectorAll('.conv-item').forEach(el => {
-    el.addEventListener('click', () => openConversation(el.dataset.convId));
-  });
+  // 事件委托替代逐个绑定 (#9 fix 的一部分)
+  list.onclick = (e) => {
+    const item = e.target.closest('.conv-item');
+    if (item) openConversation(item.dataset.convId);
+  };
 }
 
 function createEmptyConvList() {
@@ -524,27 +481,21 @@ async function openConversation(convId) {
   const conv = state.conversations.find(c => c.id === convId);
   if (!conv) return;
 
-  // Mobile: hide sidebar
   $('sidebar').classList.add('hidden');
-
-  // Show chat UI
   $('chatEmpty').style.display = 'none';
   $('chatHeader').style.display = 'flex';
   $('messageList').style.display = 'flex';
   $('chatInputArea').style.display = 'flex';
 
-  // Header
   $('chatHeaderAvatar').textContent = getInitial(conv.name);
   $('chatHeaderAvatar').style.background = conv.avatar_color;
   $('chatHeaderName').textContent = conv.name;
 
-  // Load & render messages
+  // #6 fix: 每次打开都重新加载消息
   await loadMessages(convId);
   renderMessages(convId);
   scrollMessagesToBottom();
   renderConversationList();
-
-  // Focus input
   $('messageInput').focus();
 }
 
@@ -555,27 +506,50 @@ function renderMessages(convId) {
   const conv = state.conversations.find(c => c.id === convId);
   const list = $('messageList');
 
-  list.innerHTML = msgs.map(msg => {
-    if (msg.msg_type === 'system') {
-      return `<div class="msg-system">${escapeHtml(msg.content)}</div>`;
+  // #9 fix: 只追加新消息，不全量重渲染
+  const existingCount = list.children.length;
+  if (existingCount > 0 && existingCount <= msgs.length) {
+    // 检查是否只是多了新消息
+    let isAppendOnly = true;
+    for (let i = 0; i < existingCount; i++) {
+      const existingId = list.children[i]?.dataset?.msgId;
+      const newId = msgs[i]?.id;
+      if (existingId && existingId !== newId) { isAppendOnly = false; break; }
     }
 
-    const isSelf = msg.sender_id === state.myId;
-    const member = conv?.members.find(m => m.user_id === msg.sender_id);
-    const senderName = isSelf ? '' : (member?.display_name || '未知');
-    const senderColor = member?.avatar_color || '#999';
+    if (isAppendOnly && msgs.length > existingCount) {
+      // 只追加新消息
+      for (let i = existingCount; i < msgs.length; i++) {
+        list.insertAdjacentHTML('beforeend', renderSingleMessage(msgs[i], conv));
+      }
+      return;
+    }
+  }
 
-    return `<div class="msg-group ${isSelf ? 'self' : ''}">
-      <div class="msg-avatar" style="background:${isSelf ? state.myColor : senderColor}">
-        ${isSelf ? getInitial(state.myName) : getInitial(senderName)}
-      </div>
-      <div class="msg-content">
-        ${!isSelf ? `<div class="msg-sender">${escapeHtml(senderName)}</div>` : ''}
-        <div class="msg-bubble">${escapeHtml(msg.content)}</div>
-        <div class="msg-time">${formatTime(msg.created_at)}</div>
-      </div>
-    </div>`;
-  }).join('');
+  // 首次或不一致时全量渲染
+  list.innerHTML = msgs.map(msg => renderSingleMessage(msg, conv)).join('');
+}
+
+function renderSingleMessage(msg, conv) {
+  if (msg.msg_type === 'system') {
+    return `<div class="msg-system" data-msg-id="${msg.id}">${escapeHtml(msg.content)}</div>`;
+  }
+
+  const isSelf = msg.sender_id === state.myId;
+  const member = conv?.members.find(m => m.user_id === msg.sender_id);
+  const senderName = isSelf ? '' : (member?.display_name || '未知');
+  const senderColor = isSelf ? state.myColor : (member?.avatar_color || '#999');
+
+  return `<div class="msg-group ${isSelf ? 'self' : ''}" data-msg-id="${msg.id}">
+    <div class="msg-avatar" style="background:${senderColor}">
+      ${isSelf ? getInitial(state.myName) : getInitial(senderName)}
+    </div>
+    <div class="msg-content">
+      ${!isSelf ? `<div class="msg-sender">${escapeHtml(senderName)}</div>` : ''}
+      <div class="msg-bubble">${escapeHtml(msg.content)}</div>
+      <div class="msg-time">${formatTime(msg.created_at)}</div>
+    </div>
+  </div>`;
 }
 
 function scrollMessagesToBottom() {
@@ -643,26 +617,21 @@ function renderChatInfo() {
   }
   $('chatInfoActions').innerHTML = actionsHtml;
 
-  // 绑定事件
-  const addBtn = $('btnAddGroupMember');
-  if (addBtn) {
-    addBtn.addEventListener('click', () => {
+  // #5 fix: 用事件委托 + once 防止重复绑定
+  $('chatInfoActions').onclick = async (e) => {
+    if (e.target.id === 'btnAddGroupMember') {
       closeModal('modalChatInfo');
       renderInviteMemberSelect();
       openModal('modalInviteMember');
-    });
-  }
-
-  const leaveBtn = $('btnLeaveGroup');
-  if (leaveBtn) {
-    leaveBtn.addEventListener('click', async () => {
+    }
+    if (e.target.id === 'btnLeaveGroup') {
       if (confirm('确定要退出群聊吗？')) {
-        await leaveGroup(state.currentConvId);
+        const ok = await leaveGroup(state.currentConvId);
         closeModal('modalChatInfo');
-        toast('已退出群聊');
+        toast(ok ? '已退出群聊' : '退出失败', ok ? '' : 'error');
       }
-    });
-  }
+    }
+  };
 }
 
 // ---------- 事件绑定 ----------
@@ -686,10 +655,7 @@ function bindEvents() {
     state.myName = newName;
     localStorage.setItem('webchat_name', newName);
 
-    await state.supabase
-      .from('users')
-      .update({ display_name: newName })
-      .eq('id', state.myId);
+    await state.supabase.from('users').update({ display_name: newName }).eq('id', state.myId);
 
     renderMyInfo();
     await loadConversations();
@@ -709,9 +675,7 @@ function bindEvents() {
     menu.style.display = menu.style.display === 'none' ? 'block' : 'none';
   });
 
-  document.addEventListener('click', () => {
-    $('addMenu').style.display = 'none';
-  });
+  document.addEventListener('click', () => { $('addMenu').style.display = 'none'; });
 
   $('menuAddContact').addEventListener('click', () => {
     $('inputContactId').value = '';
@@ -726,6 +690,7 @@ function bindEvents() {
     openModal('modalCreateGroup');
   });
 
+  // 添加好友
   $('btnConfirmAdd').addEventListener('click', async () => {
     const id = $('inputContactId').value.trim();
     if (!id) { $('addContactFeedback').textContent = '请输入身份码'; $('addContactFeedback').className = 'modal-feedback error'; return; }
@@ -748,6 +713,7 @@ function bindEvents() {
     }
   });
 
+  // 创建群聊
   $('btnConfirmCreateGroup').addEventListener('click', async () => {
     const name = $('inputGroupName').value.trim();
     if (!name) { $('createGroupFeedback').textContent = '请输入群名称'; $('createGroupFeedback').className = 'modal-feedback error'; return; }
@@ -769,6 +735,7 @@ function bindEvents() {
     }
   });
 
+  // 邀请入群
   $('btnConfirmInvite').addEventListener('click', async () => {
     const selected = Array.from($('inviteMemberSelect').querySelectorAll('input:checked')).map(el => el.value);
     if (selected.length === 0) {
@@ -780,8 +747,7 @@ function bindEvents() {
     $('btnConfirmInvite').disabled = true;
     let ok = true;
     for (const uid of selected) {
-      const result = await addMemberToGroup(state.currentConvId, uid);
-      if (!result) ok = false;
+      if (!(await addMemberToGroup(state.currentConvId, uid))) ok = false;
     }
     $('btnConfirmInvite').disabled = false;
 
@@ -800,30 +766,27 @@ function bindEvents() {
   $('searchInput').addEventListener('input', () => renderConversationList());
 
   // 发送消息
-  $('btnSend').addEventListener('click', () => {
+  $('btnSend').addEventListener('click', async () => {
     const input = $('messageInput');
-    sendMessage(input.value);
-    input.value = '';
-    input.style.height = 'auto';
+    const ok = await sendMessage(input.value);
+    if (ok !== false) { input.value = ''; input.style.height = 'auto'; }
   });
 
-  $('messageInput').addEventListener('keydown', (e) => {
+  $('messageInput').addEventListener('keydown', async (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       const input = $('messageInput');
-      sendMessage(input.value);
-      input.value = '';
-      input.style.height = 'auto';
+      const ok = await sendMessage(input.value);
+      if (ok !== false) { input.value = ''; input.style.height = 'auto'; }
     }
   });
 
-  // Auto-resize textarea
   $('messageInput').addEventListener('input', function() {
     this.style.height = 'auto';
     this.style.height = Math.min(this.scrollHeight, 120) + 'px';
   });
 
-  // 返回按钮 (mobile)
+  // 返回 (mobile)
   $('btnBack').addEventListener('click', () => {
     $('sidebar').classList.remove('hidden');
     state.currentConvId = null;
@@ -837,19 +800,19 @@ function bindEvents() {
     openModal('modalChatInfo');
   });
 
-  // 模态框关闭
-  document.querySelectorAll('.modal-close, [data-modal]').forEach(btn => {
-    btn.addEventListener('click', (e) => {
-      const modalId = btn.dataset.modal || btn.closest('.modal-overlay')?.id;
+  // 模态框关闭 — 事件委托
+  document.addEventListener('click', (e) => {
+    // 关闭按钮 / data-modal 元素
+    const closer = e.target.closest('.modal-close, [data-modal]');
+    if (closer) {
+      const modalId = closer.dataset.modal || closer.closest('.modal-overlay')?.id;
       if (modalId) closeModal(modalId);
-    });
-  });
-
-  // 点击 overlay 关闭
-  document.querySelectorAll('.modal-overlay').forEach(overlay => {
-    overlay.addEventListener('click', (e) => {
-      if (e.target === overlay) overlay.style.display = 'none';
-    });
+      return;
+    }
+    // 点击 overlay 背景关闭
+    if (e.target.classList.contains('modal-overlay')) {
+      e.target.style.display = 'none';
+    }
   });
 }
 
@@ -877,5 +840,4 @@ async function init() {
   toast('连接成功');
 }
 
-// 启动
 init();

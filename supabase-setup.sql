@@ -76,3 +76,10 @@ CREATE POLICY "anon_all_messages" ON messages FOR ALL USING (true) WITH CHECK (t
 
 -- === 启用 Realtime ===
 ALTER PUBLICATION supabase_realtime ADD TABLE messages;
+
+-- === 视图：每条会话的最后一条消息 ===
+CREATE OR REPLACE VIEW conversation_last_message AS
+SELECT DISTINCT ON (conversation_id)
+  conversation_id, content, sender_id, created_at
+FROM messages
+ORDER BY conversation_id, created_at DESC;
