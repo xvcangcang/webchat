@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>WebChat - 点对点聊天</title>
+  <link rel="stylesheet" href="style.css">
+  <!-- Supabase JS SDK -->
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+</head>
+<body>
+  <div id="app">
+    <!-- ======== 左侧面板 ======== -->
+    <aside id="sidebar">
+      <!-- 顶部：我的身份 -->
+      <div class="sidebar-header">
+        <div class="my-avatar" id="myAvatar"></div>
+        <div class="my-info">
+          <div class="my-name" id="myName">未设置</div>
+          <div class="my-id" id="myId" title="点击复制身份码">------</div>
+        </div>
+        <button class="icon-btn" id="btnSettings" title="设置">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-2 2 2 2 0 01-2-2v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83 0 2 2 0 010-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 01-2-2 2 2 0 012-2h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 010-2.83 2 2 0 012.83 0l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 012-2 2 2 0 012 2v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 0 2 2 0 010 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 012 2 2 2 0 01-2 2h-.09a1.65 1.65 0 00-1.51 1z"/></svg>
+        </button>
+      </div>
+
+      <!-- 搜索栏 + 添加好友 -->
+      <div class="sidebar-actions">
+        <div class="search-box">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>
+          <input type="text" id="searchInput" placeholder="搜索联系人...">
+        </div>
+        <div class="dropdown-wrap">
+          <button class="icon-btn accent" id="btnAddMenu" title="新建">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+          </button>
+          <div class="dropdown-menu" id="addMenu" style="display:none">
+            <div class="dropdown-item" id="menuAddContact">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="8.5" cy="7" r="4"/><line x1="20" y1="8" x2="20" y2="14"/><line x1="23" y1="11" x2="17" y2="11"/></svg>
+              添加好友
+            </div>
+            <div class="dropdown-item" id="menuCreateGroup">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/></svg>
+              创建群聊
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 会话列表 -->
+      <div class="conversation-list" id="conversationList">
+        <div class="empty-state" id="emptyConvList">
+          <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="var(--muted-foreground)" stroke-width="1.5"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>
+          <p>还没有会话</p>
+          <p class="hint">点击右上角 + 添加好友</p>
+        </div>
+      </div>
+    </aside>
+
+    <!-- ======== 主聊天区 ======== -->
+    <main id="chatArea">
+      <!-- 未选择会话时的空状态 -->
+      <div class="chat-empty" id="chatEmpty">
+        <svg width="80" height="80" viewBox="0 0 24 24" fill="none" stroke="var(--border)" stroke-width="1"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>
+        <p>选择一个会话开始聊天</p>
+      </div>
+
+      <!-- 聊天头部 -->
+      <div class="chat-header" id="chatHeader" style="display:none">
+        <button class="icon-btn back-btn" id="btnBack" title="返回">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 12H5"/><path d="M12 19l-7-7 7-7"/></svg>
+        </button>
+        <div class="chat-header-info">
+          <div class="chat-header-avatar" id="chatHeaderAvatar"></div>
+          <div class="chat-header-name" id="chatHeaderName">-</div>
+        </div>
+        <button class="icon-btn" id="btnChatInfo" title="会话信息">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+        </button>
+      </div>
+
+      <!-- 消息列表 -->
+      <div class="message-list" id="messageList" style="display:none"></div>
+
+      <!-- 输入区域 -->
+      <div class="chat-input-area" id="chatInputArea" style="display:none">
+        <textarea id="messageInput" placeholder="输入消息..." rows="1"></textarea>
+        <button class="send-btn" id="btnSend" title="发送 (Enter)">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+        </button>
+      </div>
+    </main>
+  </div>
+
+  <!-- ======== 模态框：添加好友 ======== -->
+  <div class="modal-overlay" id="modalAddContact" style="display:none">
+    <div class="modal">
+      <div class="modal-header">
+        <h3>添加好友</h3>
+        <button class="icon-btn modal-close" data-modal="modalAddContact">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+      <div class="modal-body">
+        <label>输入对方身份码</label>
+        <input type="text" id="inputContactId" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" autocomplete="off">
+        <div class="modal-feedback" id="addContactFeedback"></div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" data-modal="modalAddContact">取消</button>
+        <button class="btn btn-primary" id="btnConfirmAdd">添加</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ======== 模态框：创建群聊 ======== -->
+  <div class="modal-overlay" id="modalCreateGroup" style="display:none">
+    <div class="modal">
+      <div class="modal-header">
+        <h3>创建群聊</h3>
+        <button class="icon-btn modal-close" data-modal="modalCreateGroup">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+      <div class="modal-body">
+        <label>群名称</label>
+        <input type="text" id="inputGroupName" placeholder="给群聊起个名字" autocomplete="off">
+        <label style="margin-top:12px">邀请好友（选择）</label>
+        <div class="group-member-select" id="groupMemberSelect">
+          <div class="empty-hint">暂无好友，请先添加好友</div>
+        </div>
+        <div class="modal-feedback" id="createGroupFeedback"></div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" data-modal="modalCreateGroup">取消</button>
+        <button class="btn btn-primary" id="btnConfirmCreateGroup">创建</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ======== 模态框：设置 ======== -->
+  <div class="modal-overlay" id="modalSettings" style="display:none">
+    <div class="modal">
+      <div class="modal-header">
+        <h3>设置</h3>
+        <button class="icon-btn modal-close" data-modal="modalSettings">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+      <div class="modal-body">
+        <label>我的昵称</label>
+        <input type="text" id="inputMyName" placeholder="设置一个昵称" autocomplete="off">
+        <label style="margin-top:12px">我的身份码</label>
+        <div class="id-display">
+          <code id="settingsId">------</code>
+          <button class="icon-btn" id="btnCopyId" title="复制">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
+          </button>
+        </div>
+        <div class="modal-feedback" id="settingsFeedback"></div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-primary" id="btnSaveSettings">保存</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ======== 模态框：会话信息 / 群管理 ======== -->
+  <div class="modal-overlay" id="modalChatInfo" style="display:none">
+    <div class="modal">
+      <div class="modal-header">
+        <h3 id="chatInfoTitle">会话信息</h3>
+        <button class="icon-btn modal-close" data-modal="modalChatInfo">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+      <div class="modal-body">
+        <div class="chat-info-members" id="chatInfoMembers"></div>
+        <div id="chatInfoActions"></div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" data-modal="modalChatInfo">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ======== 模态框：邀请成员入群 ======== -->
+  <div class="modal-overlay" id="modalInviteMember" style="display:none">
+    <div class="modal">
+      <div class="modal-header">
+        <h3>邀请好友入群</h3>
+        <button class="icon-btn modal-close" data-modal="modalInviteMember">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+      <div class="modal-body">
+        <div class="group-member-select" id="inviteMemberSelect"></div>
+        <div class="modal-feedback" id="inviteMemberFeedback"></div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" data-modal="modalInviteMember">取消</button>
+        <button class="btn btn-primary" id="btnConfirmInvite">邀请</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ======== Toast 通知 ======== -->
+  <div id="toastContainer"></div>
+
+  <!-- 配置文件 (必须在 app.js 之前加载) -->
+  <script src="config.js"></script>
+  <!-- 主脚本 -->
+  <script src="app.js"></script>
+</body>
+</html>
