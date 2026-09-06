@@ -754,8 +754,7 @@ function bindEvents() {
       localStorage.setItem('webchat_color', newColor);
     }
 
-    await state.supabase.from('users').update({ display_name: newName }).eq('id', state.myId);
-    await state.supabase.from('users').update({ avatar_color: state.myColor }).eq('id', state.myId);
+    await state.supabase.from('users').update({ display_name: newName, avatar_color: state.myColor }).eq('id', state.myId);
 
     renderMyInfo();
     await loadConversations();
