@@ -3,13 +3,13 @@
    ============================================ */
 
 :root {
-  --bg: #f5f5f5;
-  --sidebar-bg: #2e2e2e;
-  --sidebar-hover: #3a3a3a;
-  --sidebar-active: #4a4a4a;
-  --sidebar-text: #e0e0e0;
+  --bg: #fff;
+  --sidebar-bg: #fff;
+  --sidebar-hover: #f5f5f5;
+  --sidebar-active: #ebebeb;
+  --sidebar-text: #1a1a1a;
   --sidebar-muted: #999;
-  --chat-bg: #f0f0f0;
+  --chat-bg: #fff;
   --msg-self: #95ec69;
   --msg-other: #fff;
   --primary: #07c160;
@@ -56,7 +56,7 @@ body {
   align-items: center;
   padding: 16px;
   gap: 12px;
-  border-bottom: 1px solid rgba(255,255,255,0.06);
+  border-bottom: 1px solid #eee;
 }
 
 .my-avatar {
@@ -112,7 +112,7 @@ body {
   flex: 1;
   display: flex;
   align-items: center;
-  background: rgba(255,255,255,0.08);
+  background: #f5f5f5;
   border-radius: 6px;
   padding: 6px 10px;
   gap: 8px;
@@ -145,8 +145,8 @@ body {
 }
 
 .icon-btn:hover {
-  background: rgba(255,255,255,0.1);
-  color: var(--sidebar-text);
+  background: rgba(0,0,0,0.06);
+  color: var(--text);
 }
 
 .icon-btn.accent {
@@ -165,7 +165,7 @@ body {
 }
 
 .conversation-list::-webkit-scrollbar { width: 4px; }
-.conversation-list::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.15); border-radius: 2px; }
+.conversation-list::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.15); border-radius: 2px; }
 
 .conv-item {
   display: flex;
@@ -805,6 +805,10 @@ body {
   --muted-foreground: #777;
   --card: #222;
 }
+
+[data-theme="dark"] .sidebar-header { border-bottom-color: rgba(255,255,255,0.06); }
+[data-theme="dark"] .icon-btn:hover { background: rgba(255,255,255,0.1); color: var(--sidebar-text); }
+[data-theme="dark"] .conversation-list::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.15); }
 
 [data-theme="dark"] .chat-header { background: #222; }
 [data-theme="dark"] .chat-input-area { background: #222; }
