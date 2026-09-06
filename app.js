@@ -84,19 +84,7 @@ function initIdentity() {
 // ---------- 主题系统 ----------
 function applyTheme() {
   const theme = localStorage.getItem('webchat_theme') || 'light';
-  const primaryColor = localStorage.getItem('webchat_primary') || '#07c160';
-  const bubbleColor = localStorage.getItem('webchat_bubble') || '#95ec69';
-
   document.documentElement.setAttribute('data-theme', theme);
-  document.documentElement.style.setProperty('--primary', primaryColor);
-  document.documentElement.style.setProperty('--primary-hover', primaryColor + 'dd');
-  document.documentElement.style.setProperty('--msg-self', bubbleColor);
-
-  // 计算 primary-rgb 用于 rgba
-  const r = parseInt(primaryColor.slice(1,3), 16);
-  const g = parseInt(primaryColor.slice(3,5), 16);
-  const b = parseInt(primaryColor.slice(5,7), 16);
-  document.documentElement.style.setProperty('--primary-rgb', `${r},${g},${b}`);
 }
 
 // ---------- Supabase 初始化 ----------
@@ -672,20 +660,10 @@ function bindEvents() {
       s.classList.toggle('active', s.dataset.color === state.myColor);
     });
 
-    // 同步外观设置
+    // 同步主题切换
     const currentTheme = localStorage.getItem('webchat_theme') || 'light';
     document.querySelectorAll('.theme-toggle').forEach(t => {
       t.classList.toggle('active', t.dataset.theme === currentTheme);
-    });
-
-    const currentPrimary = localStorage.getItem('webchat_primary') || '#07c160';
-    document.querySelectorAll('#themeColorPicker .color-swatch').forEach(s => {
-      s.classList.toggle('active', s.dataset.color === currentPrimary);
-    });
-
-    const currentBubble = localStorage.getItem('webchat_bubble') || '#95ec69';
-    document.querySelectorAll('#bubbleColorPicker .color-swatch').forEach(s => {
-      s.classList.toggle('active', s.dataset.color === currentBubble);
     });
 
     // 重置到第一个分类
@@ -697,46 +675,38 @@ function bindEvents() {
     openModal('modalSettings');
   });
 
-  // 设置分类导航
-  document.querySelectorAll('.settings-nav-item').forEach(item => {
-    item.addEventListener('click', () => {
-      document.querySelectorAll('.settings-nav-item').forEach(n => n.classList.remove('active'));
-      item.classList.add('active');
-      const section = item.dataset.section;
-      document.querySelectorAll('.settings-section').forEach(s => s.style.display = 'none');
-      $('section' + section.charAt(0).toUpperCase() + section.slice(1)).style.display = 'block';
-    });
+  // 设置分类导航 — 事件委托
+  document.addEventListener('click', (e) => {
+    const navItem = e.target.closest('.settings-nav-item');
+    if (!navItem || !navItem.closest('#modalSettings')) return;
+
+    document.querySelectorAll('.settings-nav-item').forEach(n => n.classList.remove('active'));
+    navItem.classList.add('active');
+    const section = navItem.dataset.section;
+    document.querySelectorAll('.settings-section').forEach(s => s.style.display = 'none');
+
+    const sectionMap = { profile: 'sectionProfile', appearance: 'sectionAppearance', about: 'sectionAbout' };
+    const target = $(sectionMap[section]);
+    if (target) target.style.display = 'block';
   });
 
-  // 头像颜色选择
-  document.querySelectorAll('#avatarColorPicker .color-swatch').forEach(swatch => {
-    swatch.addEventListener('click', () => {
-      document.querySelectorAll('#avatarColorPicker .color-swatch').forEach(s => s.classList.remove('active'));
-      swatch.classList.add('active');
-    });
+  // 头像颜色选择 — 事件委托
+  $('avatarColorPicker').addEventListener('click', (e) => {
+    const swatch = e.target.closest('.color-swatch');
+    if (!swatch) return;
+    document.querySelectorAll('#avatarColorPicker .color-swatch').forEach(s => s.classList.remove('active'));
+    swatch.classList.add('active');
   });
 
-  // 主题切换
+  // 主题切换 — 点击即生效
   document.querySelectorAll('.theme-toggle').forEach(toggle => {
     toggle.addEventListener('click', () => {
       document.querySelectorAll('.theme-toggle').forEach(t => t.classList.remove('active'));
       toggle.classList.add('active');
-    });
-  });
-
-  // 主题色选择
-  document.querySelectorAll('#themeColorPicker .color-swatch').forEach(swatch => {
-    swatch.addEventListener('click', () => {
-      document.querySelectorAll('#themeColorPicker .color-swatch').forEach(s => s.classList.remove('active'));
-      swatch.classList.add('active');
-    });
-  });
-
-  // 气泡颜色选择
-  document.querySelectorAll('#bubbleColorPicker .color-swatch').forEach(swatch => {
-    swatch.addEventListener('click', () => {
-      document.querySelectorAll('#bubbleColorPicker .color-swatch').forEach(s => s.classList.remove('active'));
-      swatch.classList.add('active');
+      const theme = toggle.dataset.theme;
+      localStorage.setItem('webchat_theme', theme);
+      document.documentElement.setAttribute('data-theme', theme);
+      toast(theme === 'dark' ? '已切换深色模式' : '已切换浅色模式', 'success');
     });
   });
 
@@ -761,21 +731,6 @@ function bindEvents() {
     renderConversationList();
     closeModal('modalSettings');
     toast('设置已保存', 'success');
-  });
-
-  // 保存外观
-  $('btnSaveAppearance').addEventListener('click', () => {
-    const theme = document.querySelector('.theme-toggle.active')?.dataset.theme || 'light';
-    const primary = document.querySelector('#themeColorPicker .color-swatch.active')?.dataset.color || '#07c160';
-    const bubble = document.querySelector('#bubbleColorPicker .color-swatch.active')?.dataset.color || '#95ec69';
-
-    localStorage.setItem('webchat_theme', theme);
-    localStorage.setItem('webchat_primary', primary);
-    localStorage.setItem('webchat_bubble', bubble);
-
-    applyTheme();
-    closeModal('modalSettings');
-    toast('外观已更新', 'success');
   });
 
   $('btnCopyId').addEventListener('click', () => {
