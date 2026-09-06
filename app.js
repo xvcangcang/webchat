@@ -76,6 +76,27 @@ function initIdentity() {
   state.myId = id;
   state.myName = name;
   state.myColor = color;
+
+  // 加载外观设置
+  applyTheme();
+}
+
+// ---------- 主题系统 ----------
+function applyTheme() {
+  const theme = localStorage.getItem('webchat_theme') || 'light';
+  const primaryColor = localStorage.getItem('webchat_primary') || '#07c160';
+  const bubbleColor = localStorage.getItem('webchat_bubble') || '#95ec69';
+
+  document.documentElement.setAttribute('data-theme', theme);
+  document.documentElement.style.setProperty('--primary', primaryColor);
+  document.documentElement.style.setProperty('--primary-hover', primaryColor + 'dd');
+  document.documentElement.style.setProperty('--msg-self', bubbleColor);
+
+  // 计算 primary-rgb 用于 rgba
+  const r = parseInt(primaryColor.slice(1,3), 16);
+  const g = parseInt(primaryColor.slice(3,5), 16);
+  const b = parseInt(primaryColor.slice(5,7), 16);
+  document.documentElement.style.setProperty('--primary-rgb', `${r},${g},${b}`);
 }
 
 // ---------- Supabase 初始化 ----------
@@ -645,23 +666,117 @@ function bindEvents() {
   $('btnSettings').addEventListener('click', () => {
     $('inputMyName').value = state.myName;
     $('settingsId').textContent = state.myId;
+
+    // 同步头像颜色选中态
+    document.querySelectorAll('#avatarColorPicker .color-swatch').forEach(s => {
+      s.classList.toggle('active', s.dataset.color === state.myColor);
+    });
+
+    // 同步外观设置
+    const currentTheme = localStorage.getItem('webchat_theme') || 'light';
+    document.querySelectorAll('.theme-toggle').forEach(t => {
+      t.classList.toggle('active', t.dataset.theme === currentTheme);
+    });
+
+    const currentPrimary = localStorage.getItem('webchat_primary') || '#07c160';
+    document.querySelectorAll('#themeColorPicker .color-swatch').forEach(s => {
+      s.classList.toggle('active', s.dataset.color === currentPrimary);
+    });
+
+    const currentBubble = localStorage.getItem('webchat_bubble') || '#95ec69';
+    document.querySelectorAll('#bubbleColorPicker .color-swatch').forEach(s => {
+      s.classList.toggle('active', s.dataset.color === currentBubble);
+    });
+
+    // 重置到第一个分类
+    document.querySelectorAll('.settings-nav-item').forEach(n => n.classList.remove('active'));
+    document.querySelector('.settings-nav-item[data-section="profile"]').classList.add('active');
+    document.querySelectorAll('.settings-section').forEach(s => s.style.display = 'none');
+    $('sectionProfile').style.display = 'block';
+
     openModal('modalSettings');
   });
 
-  $('btnSaveSettings').addEventListener('click', async () => {
+  // 设置分类导航
+  document.querySelectorAll('.settings-nav-item').forEach(item => {
+    item.addEventListener('click', () => {
+      document.querySelectorAll('.settings-nav-item').forEach(n => n.classList.remove('active'));
+      item.classList.add('active');
+      const section = item.dataset.section;
+      document.querySelectorAll('.settings-section').forEach(s => s.style.display = 'none');
+      $('section' + section.charAt(0).toUpperCase() + section.slice(1)).style.display = 'block';
+    });
+  });
+
+  // 头像颜色选择
+  document.querySelectorAll('#avatarColorPicker .color-swatch').forEach(swatch => {
+    swatch.addEventListener('click', () => {
+      document.querySelectorAll('#avatarColorPicker .color-swatch').forEach(s => s.classList.remove('active'));
+      swatch.classList.add('active');
+    });
+  });
+
+  // 主题切换
+  document.querySelectorAll('.theme-toggle').forEach(toggle => {
+    toggle.addEventListener('click', () => {
+      document.querySelectorAll('.theme-toggle').forEach(t => t.classList.remove('active'));
+      toggle.classList.add('active');
+    });
+  });
+
+  // 主题色选择
+  document.querySelectorAll('#themeColorPicker .color-swatch').forEach(swatch => {
+    swatch.addEventListener('click', () => {
+      document.querySelectorAll('#themeColorPicker .color-swatch').forEach(s => s.classList.remove('active'));
+      swatch.classList.add('active');
+    });
+  });
+
+  // 气泡颜色选择
+  document.querySelectorAll('#bubbleColorPicker .color-swatch').forEach(swatch => {
+    swatch.addEventListener('click', () => {
+      document.querySelectorAll('#bubbleColorPicker .color-swatch').forEach(s => s.classList.remove('active'));
+      swatch.classList.add('active');
+    });
+  });
+
+  // 保存个人信息
+  $('btnSaveProfile').addEventListener('click', async () => {
     const newName = $('inputMyName').value.trim();
     if (!newName) { toast('昵称不能为空', 'error'); return; }
 
     state.myName = newName;
     localStorage.setItem('webchat_name', newName);
 
+    const newColor = document.querySelector('#avatarColorPicker .color-swatch.active')?.dataset.color;
+    if (newColor && newColor !== state.myColor) {
+      state.myColor = newColor;
+      localStorage.setItem('webchat_color', newColor);
+    }
+
     await state.supabase.from('users').update({ display_name: newName }).eq('id', state.myId);
+    await state.supabase.from('users').update({ avatar_color: state.myColor }).eq('id', state.myId);
 
     renderMyInfo();
     await loadConversations();
     renderConversationList();
     closeModal('modalSettings');
     toast('设置已保存', 'success');
+  });
+
+  // 保存外观
+  $('btnSaveAppearance').addEventListener('click', () => {
+    const theme = document.querySelector('.theme-toggle.active')?.dataset.theme || 'light';
+    const primary = document.querySelector('#themeColorPicker .color-swatch.active')?.dataset.color || '#07c160';
+    const bubble = document.querySelector('#bubbleColorPicker .color-swatch.active')?.dataset.color || '#95ec69';
+
+    localStorage.setItem('webchat_theme', theme);
+    localStorage.setItem('webchat_primary', primary);
+    localStorage.setItem('webchat_bubble', bubble);
+
+    applyTheme();
+    closeModal('modalSettings');
+    toast('外观已更新', 'success');
   });
 
   $('btnCopyId').addEventListener('click', () => {
