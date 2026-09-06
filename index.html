@@ -138,29 +138,123 @@
     </div>
   </div>
 
-  <!-- ======== 模态框：设置 ======== -->
+  <!-- ======== 模态框：设置（分类面板） ======== -->
   <div class="modal-overlay" id="modalSettings" style="display:none">
-    <div class="modal">
-      <div class="modal-header">
-        <h3>设置</h3>
-        <button class="icon-btn modal-close" data-modal="modalSettings">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-        </button>
-      </div>
-      <div class="modal-body">
-        <label>我的昵称</label>
-        <input type="text" id="inputMyName" placeholder="设置一个昵称" autocomplete="off">
-        <label style="margin-top:12px">我的身份码</label>
-        <div class="id-display">
-          <code id="settingsId">------</code>
-          <button class="icon-btn" id="btnCopyId" title="复制">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
-          </button>
+    <div class="modal settings-modal">
+      <div class="settings-layout">
+        <!-- 左侧分类导航 -->
+        <div class="settings-nav">
+          <div class="settings-nav-header">
+            <h3>设置</h3>
+            <button class="icon-btn modal-close" data-modal="modalSettings">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+            </button>
+          </div>
+          <div class="settings-nav-items">
+            <div class="settings-nav-item active" data-section="profile">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+              个人信息
+            </div>
+            <div class="settings-nav-item" data-section="appearance">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
+              外观
+            </div>
+            <div class="settings-nav-item" data-section="about">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+              关于
+            </div>
+          </div>
         </div>
-        <div class="modal-feedback" id="settingsFeedback"></div>
-      </div>
-      <div class="modal-footer">
-        <button class="btn btn-primary" id="btnSaveSettings">保存</button>
+
+        <!-- 右侧内容区 -->
+        <div class="settings-content">
+          <!-- 个人信息 -->
+          <div class="settings-section" id="sectionProfile">
+            <div class="settings-section-title">个人信息</div>
+
+            <label>头像颜色</label>
+            <div class="color-picker" id="avatarColorPicker">
+              <div class="color-swatch active" data-color="#4A90D9" style="background:#4A90D9"></div>
+              <div class="color-swatch" data-color="#5B8C5A" style="background:#5B8C5A"></div>
+              <div class="color-swatch" data-color="#D94A6B" style="background:#D94A6B"></div>
+              <div class="color-swatch" data-color="#D9A04A" style="background:#D9A04A"></div>
+              <div class="color-swatch" data-color="#8C5BD9" style="background:#8C5BD9"></div>
+              <div class="color-swatch" data-color="#4AD9C4" style="background:#4AD9C4"></div>
+              <div class="color-swatch" data-color="#D96B4A" style="background:#D96B4A"></div>
+              <div class="color-swatch" data-color="#6B8CD9" style="background:#6B8CD9"></div>
+              <div class="color-swatch" data-color="#D94A9E" style="background:#D94A9E"></div>
+              <div class="color-swatch" data-color="#4AD97A" style="background:#4AD97A"></div>
+            </div>
+
+            <label style="margin-top:16px">我的昵称</label>
+            <input type="text" id="inputMyName" placeholder="设置一个昵称" autocomplete="off">
+
+            <label style="margin-top:16px">我的身份码</label>
+            <div class="id-display">
+              <code id="settingsId">------</code>
+              <button class="icon-btn" id="btnCopyId" title="复制">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
+              </button>
+            </div>
+
+            <div class="settings-actions">
+              <button class="btn btn-primary" id="btnSaveProfile">保存个人信息</button>
+            </div>
+          </div>
+
+          <!-- 外观 -->
+          <div class="settings-section" id="sectionAppearance" style="display:none">
+            <div class="settings-section-title">外观</div>
+
+            <label>主题模式</label>
+            <div class="theme-toggle-group">
+              <div class="theme-toggle" data-theme="light">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
+                浅色
+              </div>
+              <div class="theme-toggle" data-theme="dark">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z"/></svg>
+                深色
+              </div>
+            </div>
+
+            <label style="margin-top:16px">主题色</label>
+            <div class="color-picker" id="themeColorPicker">
+              <div class="color-swatch active" data-color="#07c160" style="background:#07c160" title="微信绿"></div>
+              <div class="color-swatch" data-color="#1a73e8" style="background:#1a73e8" title="谷歌蓝"></div>
+              <div class="color-swatch" data-color="#7c3aed" style="background:#7c3aed" title="紫色"></div>
+              <div class="color-swatch" data-color="#e11d48" style="background:#e11d48" title="红色"></div>
+              <div class="color-swatch" data-color="#ea580c" style="background:#ea580c" title="橙色"></div>
+              <div class="color-swatch" data-color="#0891b2" style="background:#0891b2" title="青色"></div>
+            </div>
+
+            <label style="margin-top:16px">消息气泡颜色（自己）</label>
+            <div class="color-picker" id="bubbleColorPicker">
+              <div class="color-swatch active" data-color="#95ec69" style="background:#95ec69" title="微信绿"></div>
+              <div class="color-swatch" data-color="#a0d9ff" style="background:#a0d9ff" title="浅蓝"></div>
+              <div class="color-swatch" data-color="#d8b4fe" style="background:#d8b4fe" title="浅紫"></div>
+              <div class="color-swatch" data-color="#fca5a5" style="background:#fca5a5" title="浅红"></div>
+              <div class="color-swatch" data-color="#fcd34d" style="background:#fcd34d" title="浅黄"></div>
+              <div class="color-swatch" data-color="#fff" style="background:#fff; border:1px solid #ccc" title="白色"></div>
+            </div>
+
+            <div class="settings-actions">
+              <button class="btn btn-primary" id="btnSaveAppearance">保存外观</button>
+            </div>
+          </div>
+
+          <!-- 关于 -->
+          <div class="settings-section" id="sectionAbout" style="display:none">
+            <div class="settings-section-title">关于 WebChat</div>
+            <div class="about-info">
+              <div class="about-row"><span>版本</span><span>v1.1</span></div>
+              <div class="about-row"><span>技术栈</span><span>HTML + CSS + JS + Supabase</span></div>
+              <div class="about-row"><span>部署</span><span>GitHub Pages / PocketBase</span></div>
+              <div class="about-row"><span>协议</span><span>MIT License</span></div>
+            </div>
+            <p class="about-desc">一个轻量级点对点聊天平台，每个浏览器生成唯一身份码，输入身份码即可添加好友聊天。</p>
+          </div>
+        </div>
       </div>
     </div>
   </div>
