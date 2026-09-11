@@ -999,6 +999,38 @@ body {
   margin-top: 8px;
 }
 
+/* ======== Context Menu ======== */
+.context-menu {
+  position: fixed;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 4px;
+  min-width: 130px;
+  box-shadow: 0 4px 20px rgba(0,0,0,0.15);
+  z-index: 300;
+  animation: fadeIn 0.12s ease;
+}
+
+.context-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-radius: 6px;
+  font-size: 13px;
+  color: var(--text);
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.context-menu-item:hover { background: #f0f0f0; }
+
+[data-theme="dark"] .context-menu-item:hover { background: #333; }
+.context-menu-item.danger { color: var(--danger); }
+.context-menu-item.danger:hover { background: rgba(250,81,81,0.08); }
+[data-theme="dark"] .context-menu-item.danger:hover { background: rgba(250,81,81,0.15); }
+
 /* ======== Responsive ======== */
 @media (max-width: 768px) {
   :root { --sidebar-width: 100vw; }
