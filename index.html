@@ -55,6 +55,9 @@
           <p class="hint">点击右上角 + 添加好友</p>
         </div>
       </div>
+
+      <!-- 底部版本号 -->
+      <div class="sidebar-footer" id="appVersion"></div>
     </aside>
 
     <!-- ======== 主聊天区 ======== -->
@@ -253,7 +256,7 @@
           <div class="settings-section" id="sectionAbout" style="display:none">
             <div class="settings-section-title">关于 WebChat</div>
             <div class="about-info">
-              <div class="about-row"><span>版本</span><span>v1.1</span></div>
+              <div class="about-row"><span>版本</span><span id="aboutVersion">-</span></div>
               <div class="about-row"><span>技术栈</span><span>HTML + CSS + JS + Supabase</span></div>
               <div class="about-row"><span>部署</span><span>GitHub Pages / PocketBase</span></div>
               <div class="about-row"><span>协议</span><span>MIT License</span></div>
@@ -317,6 +320,8 @@
 
   <!-- 配置文件 (必须在 app.js 之前加载) -->
   <script src="config.js"></script>
+  <!-- 版本号 -->
+  <script src="version.js"></script>
   <!-- 主脚本 -->
   <script src="app.js"></script>
 </body>

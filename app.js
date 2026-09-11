@@ -528,6 +528,10 @@ function renderMyInfo() {
   $('myName').textContent = state.myName;
   $('myId').textContent = state.myId;
   $('myId').title = '点击复制: ' + state.myId;
+  // 显示版本号
+  if (typeof APP_VERSION !== 'undefined') {
+    $('appVersion').textContent = 'WebChat ' + APP_VERSION;
+  }
 }
 
 function renderConversationList() {
@@ -845,6 +849,11 @@ function bindEvents() {
     document.querySelector('.settings-nav-item[data-section="profile"]').classList.add('active');
     document.querySelectorAll('.settings-section').forEach(s => s.style.display = 'none');
     $('sectionProfile').style.display = 'block';
+
+    // 设置关于页版本号
+    if (typeof APP_VERSION !== 'undefined') {
+      $('aboutVersion').textContent = APP_VERSION;
+    }
 
     openModal('modalSettings');
   });
