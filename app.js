@@ -216,6 +216,9 @@ async function loadConversations() {
     const tb = b.lastMsg?.time || '0';
     return tb.localeCompare(ta);
   });
+
+  // 会话变化后刷新实时订阅（只在订阅已初始化时）
+  if (state.subscription) refreshSubscription();
 }
 
 async function loadMessages(convId) {
@@ -396,10 +399,32 @@ async function sendMessage(content) {
 
 // ---------- 实时订阅 ----------
 function subscribeRealtime() {
-  // 构建用户参与的会话 ID 集合，实时过滤
-  function myConvIds() {
-    return new Set(state.conversations.map(c => c.id));
+  refreshSubscription();
+}
+
+function refreshSubscription() {
+  // 取消旧订阅
+  if (state.subscription) {
+    state.supabase.removeChannel(state.subscription);
   }
+
+  const convIds = state.conversations.map(c => c.id);
+  if (convIds.length === 0) {
+    // 没有会话时只订阅自己的消息（不会触发通知）
+    state.subscription = state.supabase
+      .channel('messages-realtime')
+      .on('postgres_changes', {
+        event: 'INSERT',
+        schema: 'public',
+        table: 'messages',
+        filter: `sender_id=eq.${state.myId}`,
+      }, () => {})
+      .subscribe();
+    return;
+  }
+
+  // 服务端过滤：只接收自己参与的会话的消息
+  const filterStr = `conversation_id=in.(${convIds.map(id => `"${id}"`).join(',')})`;
 
   state.subscription = state.supabase
     .channel('messages-realtime')
@@ -407,12 +432,10 @@ function subscribeRealtime() {
       event: 'INSERT',
       schema: 'public',
       table: 'messages',
+      filter: filterStr,
     }, (payload) => {
       const msg = payload.new;
-      // 忽略自己发的（本地已处理）
       if (msg.sender_id === state.myId) return;
-      // 只处理自己参与的会话的消息
-      if (!myConvIds().has(msg.conversation_id)) return;
 
       if (!state.messages[msg.conversation_id]) state.messages[msg.conversation_id] = [];
       state.messages[msg.conversation_id].push(msg);
