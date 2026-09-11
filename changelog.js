@@ -1,5 +1,12 @@
 const CHANGELOG = [
   {
+    version: 'v1.4.0',
+    date: '2026-09-06',
+    changes: [
+      '新增加载动画，连接服务器时显示',
+    ]
+  },
+  {
     version: 'v1.3.0',
     date: '2026-09-06',
     changes: [

@@ -164,7 +164,7 @@ async function loadConversations() {
   const [convsRes, membersRes, lastMsgRes] = await Promise.all([
     state.supabase.from('conversations').select('*').in('id', convIds),
     state.supabase.from('conversation_members')
-      .select('conversation_id, user_id, users(display_name, avatar_color)')
+      .select('conversation_id, user_id, role, users(display_name, avatar_color)')
       .in('conversation_id', convIds),
     // #1 fix: 用视图只取每条会话的最后一条消息，不查全部
     state.supabase.from('conversation_last_message')
@@ -184,6 +184,7 @@ async function loadConversations() {
       .filter(m => m.conversation_id === conv.id)
       .map(m => ({
         user_id: m.user_id,
+        role: m.role || 'member',
         display_name: m.users?.display_name || '未知',
         avatar_color: m.users?.avatar_color || '#999',
       }));
@@ -351,7 +352,50 @@ async function addMemberToGroup(convId, userId) {
 }
 
 async function leaveGroup(convId) {
-  // #7 fix: 先发请求，成功后再修改本地状态
+  const conv = state.conversations.find(c => c.id === convId);
+  if (!conv) return false;
+
+  const myRole = conv.members.find(m => m.user_id === state.myId)?.role;
+
+  // 群主退群：先转让给发言最多的成员
+  if (myRole === 'owner') {
+    const others = conv.members.filter(m => m.user_id !== state.myId);
+    if (others.length > 0) {
+      // 查发言最多的成员
+      const { data: msgStats } = await state.supabase
+        .from('messages')
+        .select('sender_id')
+        .eq('conversation_id', convId)
+        .neq('sender_id', state.myId);
+
+      const countMap = {};
+      (msgStats || []).forEach(m => { countMap[m.sender_id] = (countMap[m.sender_id] || 0) + 1; });
+
+      // 按消息数排序，取最多的人
+      const sorted = others.sort((a, b) => (countMap[b.user_id] || 0) - (countMap[a.user_id] || 0));
+      const newOwnerId = sorted[0].user_id;
+
+      await state.supabase.from('conversation_members')
+        .update({ role: 'owner' })
+        .eq('conversation_id', convId)
+        .eq('user_id', newOwnerId);
+
+      await state.supabase.from('messages').insert({
+        conversation_id: convId, sender_id: state.myId,
+        content: `${state.myName} 已退出群聊，群主已转让给 ${sorted[0].display_name}`, msg_type: 'system',
+      });
+    } else {
+      // 没有其他成员，解散群聊
+      await dissolveGroup(convId);
+      return true;
+    }
+  } else {
+    await state.supabase.from('messages').insert({
+      conversation_id: convId, sender_id: state.myId,
+      content: `${state.myName} 已退出群聊`, msg_type: 'system',
+    });
+  }
+
   const { error } = await state.supabase
     .from('conversation_members')
     .delete()
@@ -366,6 +410,76 @@ async function leaveGroup(convId) {
   refreshSubscription();
   renderConversationList();
   renderChatEmpty();
+  return true;
+}
+
+async function dissolveGroup(convId) {
+  // 删除所有消息、成员、会话
+  await state.supabase.from('messages').delete().eq('conversation_id', convId);
+  await state.supabase.from('conversation_members').delete().eq('conversation_id', convId);
+  await state.supabase.from('conversations').delete().eq('id', convId);
+
+  delete state.messages[convId];
+  state.currentConvId = null;
+  await loadConversations();
+  refreshSubscription();
+  renderConversationList();
+  renderChatEmpty();
+  toast('群聊已解散');
+  return true;
+}
+
+async function kickMember(convId, userId) {
+  const conv = state.conversations.find(c => c.id === convId);
+  if (!conv) return false;
+
+  const target = conv.members.find(m => m.user_id === userId);
+  if (!target) return false;
+
+  const myRole = conv.members.find(m => m.user_id === state.myId)?.role;
+
+  // 权限检查
+  if (target.role === 'owner') { toast('不能踢出群主', 'error'); return false; }
+  if (myRole === 'admin' && target.role === 'admin') { toast('管理员不能踢出其他管理员', 'error'); return false; }
+
+  await state.supabase.from('conversation_members')
+    .delete()
+    .eq('conversation_id', convId)
+    .eq('user_id', userId);
+
+  await state.supabase.from('messages').insert({
+    conversation_id: convId, sender_id: state.myId,
+    content: `${target.display_name} 已被移出群聊`, msg_type: 'system',
+  });
+
+  // 刷新
+  await loadConversations();
+  refreshSubscription();
+  if (state.currentConvId === convId) await openConversation(convId);
+  toast(`已将 ${target.display_name} 移出群聊`);
+  return true;
+}
+
+async function toggleAdmin(convId, userId, promote) {
+  const newRole = promote ? 'admin' : 'member';
+  await state.supabase.from('conversation_members')
+    .update({ role: newRole })
+    .eq('conversation_id', convId)
+    .eq('user_id', userId);
+
+  const conv = state.conversations.find(c => c.id === convId);
+  const target = conv?.members.find(m => m.user_id === userId);
+  const name = target?.display_name || '成员';
+
+  await state.supabase.from('messages').insert({
+    conversation_id: convId, sender_id: state.myId,
+    content: promote ? `${name} 已被设为管理员` : `${name} 已被取消管理员`, msg_type: 'system',
+  });
+
+  await loadConversations();
+  refreshSubscription();
+  if (state.currentConvId === convId) await openConversation(convId);
+  toast(promote ? `${name} 已设为管理员` : `${name} 已取消管理员`);
   return true;
 }
 
@@ -787,24 +901,54 @@ function renderChatInfo() {
   const conv = state.conversations.find(c => c.id === state.currentConvId);
   if (!conv) return;
 
-  $('chatInfoTitle').textContent = conv.type === 'group' ? '群聊信息' : '好友信息';
+  const isGroup = conv.type === 'group';
+  $('chatInfoTitle').textContent = isGroup ? '群聊信息' : '好友信息';
 
-  $('chatInfoMembers').innerHTML = conv.members.map(m => `
-    <div class="chat-info-member">
+  const myRole = conv.members.find(m => m.user_id === state.myId)?.role;
+  const isOwner = myRole === 'owner';
+  const isAdmin = myRole === 'admin';
+
+  // 成员列表（带角色标签）
+  $('chatInfoMembers').innerHTML = conv.members.map(m => {
+    let roleTag = '';
+    if (m.role === 'owner') roleTag = '<span class="role-tag owner">群主</span>';
+    else if (m.role === 'admin') roleTag = '<span class="role-tag admin">管理员</span>';
+
+    // 管理按钮（根据权限显示）
+    let actions = '';
+    if (m.user_id !== state.myId) {
+      if (isOwner) {
+        // 群主可以：踢任何人、设/撤管理员
+        actions = `<div class="member-actions">`;
+        if (m.role === 'member') actions += `<button class="link-btn" data-action="promote" data-uid="${m.user_id}">设为管理</button>`;
+        if (m.role === 'admin') actions += `<button class="link-btn" data-action="demote" data-uid="${m.user_id}">取消管理</button>`;
+        actions += `<button class="link-btn danger" data-action="kick" data-uid="${m.user_id}">移出</button></div>`;
+      } else if (isAdmin && m.role === 'member') {
+        // 管理员只能踢普通成员
+        actions = `<div class="member-actions"><button class="link-btn danger" data-action="kick" data-uid="${m.user_id}">移出</button></div>`;
+      }
+    }
+
+    return `<div class="chat-info-member" style="width:auto">
       <div class="member-avatar" style="background:${m.avatar_color}">${getInitial(m.display_name)}</div>
-      <div class="member-name">${escapeHtml(m.display_name)}</div>
-    </div>
-  `).join('');
+      <div class="member-name">${escapeHtml(m.display_name)}${roleTag}</div>
+      ${actions}
+    </div>`;
+  }).join('');
 
+  // 底部操作按钮
   let actionsHtml = '';
-  if (conv.type === 'group') {
-    actionsHtml = `
-      <button class="btn btn-secondary" id="btnAddGroupMember">+ 邀请好友入群</button>
-      <button class="btn btn-danger" id="btnLeaveGroup">退出群聊</button>`;
+  if (isGroup) {
+    actionsHtml = `<button class="btn btn-secondary" id="btnAddGroupMember">+ 邀请好友入群</button>`;
+    if (isOwner) {
+      actionsHtml += `<button class="btn btn-danger" id="btnDissolveGroup">解散群聊</button>`;
+    } else {
+      actionsHtml += `<button class="btn btn-danger" id="btnLeaveGroup">退出群聊</button>`;
+    }
   }
   $('chatInfoActions').innerHTML = actionsHtml;
 
-  // #5 fix: 用事件委托 + once 防止重复绑定
+  // 事件委托
   $('chatInfoActions').onclick = async (e) => {
     if (e.target.id === 'btnAddGroupMember') {
       closeModal('modalChatInfo');
@@ -812,11 +956,40 @@ function renderChatInfo() {
       openModal('modalInviteMember');
     }
     if (e.target.id === 'btnLeaveGroup') {
-      if (confirm('确定要退出群聊吗？')) {
+      if (confirm('确定退出群聊？')) {
         const ok = await leaveGroup(state.currentConvId);
         closeModal('modalChatInfo');
         toast(ok ? '已退出群聊' : '退出失败', ok ? '' : 'error');
       }
+    }
+    if (e.target.id === 'btnDissolveGroup') {
+      if (confirm('确定解散群聊？所有消息将被删除，不可恢复。')) {
+        await dissolveGroup(state.currentConvId);
+        closeModal('modalChatInfo');
+      }
+    }
+  };
+
+  // 成员操作事件委托
+  $('chatInfoMembers').onclick = async (e) => {
+    const action = e.target.dataset.action;
+    const uid = e.target.dataset.uid;
+    if (!action || !uid) return;
+
+    if (action === 'kick') {
+      const target = conv.members.find(m => m.user_id === uid);
+      if (confirm(`确定将 ${target?.display_name || '该成员'} 移出群聊？`)) {
+        await kickMember(state.currentConvId, uid);
+        closeModal('modalChatInfo');
+      }
+    }
+    if (action === 'promote') {
+      await toggleAdmin(state.currentConvId, uid, true);
+      renderChatInfo();
+    }
+    if (action === 'demote') {
+      await toggleAdmin(state.currentConvId, uid, false);
+      renderChatInfo();
     }
   };
 }
@@ -1162,6 +1335,7 @@ async function init() {
   if (typeof SUPABASE_URL === 'undefined' || typeof SUPABASE_ANON_KEY === 'undefined') {
     toast('请先配置 config.js！参考 config.example.js', 'error');
     $('conversationList').innerHTML = '<div class="empty-state"><p style="color:#fa5151">⚠️ 请先配置 config.js</p></div>';
+    $('loadingScreen').classList.add('hidden');
     return;
   }
 
@@ -1177,6 +1351,7 @@ async function init() {
       <p style="color:#fa5151">⚠️ 连接失败</p>
       <p class="hint">请检查 config.js 配置</p>
     </div>`;
+    $('loadingScreen').classList.add('hidden');
     return;
   }
 
@@ -1185,6 +1360,10 @@ async function init() {
   renderConversationList();
   subscribeRealtime();
   bindEvents();
+
+  // 隐藏加载动画
+  $('loadingScreen').classList.add('hidden');
+  setTimeout(() => $('loadingScreen').remove(), 500);
 
   toast('连接成功');
 }

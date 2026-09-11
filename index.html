@@ -9,6 +9,17 @@
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 </head>
 <body>
+  <!-- 加载动画 -->
+  <div id="loadingScreen" class="loading-screen">
+    <div class="loading-content">
+      <div class="loading-bubble">
+        <span></span><span></span><span></span>
+      </div>
+      <div class="loading-text">WebChat</div>
+      <div class="loading-sub">正在连接服务器...</div>
+    </div>
+  </div>
+
   <div id="app">
     <!-- ======== 左侧面板 ======== -->
     <aside id="sidebar">
