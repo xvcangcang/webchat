@@ -16,12 +16,9 @@ const state = {
 };
 
 // ---------- 工具函数 ----------
-function genUUID() {
-  if (crypto.randomUUID) return crypto.randomUUID();
-  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
-    const r = Math.random() * 16 | 0;
-    return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16);
-  });
+function genShortId() {
+  // 生成 5 位随机数字 (10000-99999)
+  return String(Math.floor(10000 + Math.random() * 90000));
 }
 
 function randomColor() {
@@ -64,21 +61,42 @@ function toast(msg, type = '') {
 function $(id) { return document.getElementById(id); }
 
 // ---------- 身份码系统 ----------
-function initIdentity() {
+async function initIdentity() {
   let id = localStorage.getItem('webchat_id');
   let name = localStorage.getItem('webchat_name');
   let color = localStorage.getItem('webchat_color');
 
-  if (!id) { id = genUUID(); localStorage.setItem('webchat_id', id); }
-  if (!name) { name = '用户' + id.slice(0, 4); localStorage.setItem('webchat_name', name); }
+  // 如果旧 ID 是 UUID 格式（含 -），清除让它重新生成
+  if (id && id.includes('-')) { id = null; localStorage.removeItem('webchat_id'); }
+
+  if (!name) { name = '用户'; localStorage.setItem('webchat_name', name); }
   if (!color) { color = randomColor(); localStorage.setItem('webchat_color', color); }
 
-  state.myId = id;
   state.myName = name;
   state.myColor = color;
 
-  // 加载外观设置
+  // 生成唯一 5 位身份码
+  if (!id) {
+    id = await generateUniqueId();
+    localStorage.setItem('webchat_id', id);
+  }
+  state.myId = id;
+
   applyTheme();
+}
+
+async function generateUniqueId() {
+  for (let i = 0; i < 20; i++) {
+    const candidate = genShortId();
+    const { data } = await state.supabase
+      .from('users')
+      .select('id')
+      .eq('id', candidate)
+      .maybeSingle();
+    if (!data) return candidate;
+  }
+  // 极端情况：20 次都撞，用 6 位
+  return String(Math.floor(100000 + Math.random() * 900000));
 }
 
 // ---------- 主题系统 ----------
@@ -89,13 +107,6 @@ function applyTheme() {
 
 // ---------- Supabase 初始化 ----------
 async function initSupabase() {
-  if (typeof SUPABASE_URL === 'undefined' || typeof SUPABASE_ANON_KEY === 'undefined') {
-    toast('请先配置 config.js！参考 config.example.js', 'error');
-    throw new Error('Missing config.js');
-  }
-
-  state.supabase = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
-
   // 注册/更新用户
   const { error } = await state.supabase
     .from('users')
@@ -415,7 +426,7 @@ function renderMyInfo() {
   $('myAvatar').textContent = getInitial(state.myName);
   $('myAvatar').style.background = state.myColor;
   $('myName').textContent = state.myName;
-  $('myId').textContent = state.myId.slice(0, 8) + '...';
+  $('myId').textContent = state.myId;
   $('myId').title = '点击复制: ' + state.myId;
 }
 
@@ -569,6 +580,69 @@ function scrollMessagesToBottom() {
 // ---------- 模态框 ----------
 function openModal(id) { $(id).style.display = 'flex'; }
 function closeModal(id) { $(id).style.display = 'none'; }
+
+// ---------- 右键菜单 ----------
+let _ctxMsgId = null;
+let _ctxConvId = null;
+
+function showContextMenu(x, y, msgId, convId, isSelf) {
+  _ctxMsgId = msgId;
+  _ctxConvId = convId;
+
+  const menu = $('contextMenu');
+  // 只有自己发的消息才能撤回
+  $('ctxRecall').style.display = isSelf ? 'flex' : 'none';
+
+  // 定位，防止超出屏幕
+  menu.style.display = 'block';
+  const mw = menu.offsetWidth;
+  const mh = menu.offsetHeight;
+  const finalX = Math.min(x, window.innerWidth - mw - 8);
+  const finalY = Math.min(y, window.innerHeight - mh - 8);
+  menu.style.left = finalX + 'px';
+  menu.style.top = finalY + 'px';
+}
+
+function hideContextMenu() {
+  $('contextMenu').style.display = 'none';
+  _ctxMsgId = null;
+  _ctxConvId = null;
+}
+
+async function recallMessage() {
+  if (!_ctxMsgId || !_ctxConvId) return;
+
+  const { error } = await state.supabase
+    .from('messages')
+    .delete()
+    .eq('id', _ctxMsgId)
+    .eq('sender_id', state.myId); // 只能撤回自己的
+
+  if (error) { console.error('Recall error:', error); toast('撤回失败', 'error'); hideContextMenu(); return; }
+
+  // 从本地缓存移除
+  const msgs = state.messages[_ctxConvId];
+  if (msgs) {
+    const idx = msgs.findIndex(m => m.id === _ctxMsgId);
+    if (idx !== -1) msgs.splice(idx, 1);
+  }
+
+  // 插入系统消息
+  const { data: sysMsg } = await state.supabase
+    .from('messages')
+    .insert({ conversation_id: _ctxConvId, sender_id: state.myId, content: '你撤回了一条消息', msg_type: 'system' })
+    .select()
+    .single();
+
+  if (sysMsg) {
+    if (!state.messages[_ctxConvId]) state.messages[_ctxConvId] = [];
+    state.messages[_ctxConvId].push(sysMsg);
+  }
+
+  renderMessages(_ctxConvId);
+  hideContextMenu();
+  toast('已撤回');
+}
 
 function renderGroupMemberSelect() {
   const container = $('groupMemberSelect');
@@ -737,6 +811,27 @@ function bindEvents() {
     navigator.clipboard.writeText(state.myId).then(() => toast('身份码已复制', 'success'));
   });
 
+  // 右键菜单 — 消息右键
+  $('messageList').addEventListener('contextmenu', (e) => {
+    const msgGroup = e.target.closest('.msg-group');
+    if (!msgGroup) return;
+    e.preventDefault();
+
+    const msgId = msgGroup.dataset.msgId;
+    const convId = state.currentConvId;
+    const isSelf = msgGroup.classList.contains('self');
+    showContextMenu(e.clientX, e.clientY, msgId, convId, isSelf);
+  });
+
+  // 撤回按钮
+  $('ctxRecall').addEventListener('click', () => recallMessage());
+
+  // 点击其他地方关闭菜单
+  document.addEventListener('click', () => hideContextMenu());
+  document.addEventListener('contextmenu', (e) => {
+    if (!e.target.closest('.msg-group')) hideContextMenu();
+  });
+
   // 新建菜单
   $('btnAddMenu').addEventListener('click', (e) => {
     e.stopPropagation();
@@ -887,7 +982,15 @@ function bindEvents() {
 
 // ---------- 初始化 ----------
 async function init() {
-  initIdentity();
+  if (typeof SUPABASE_URL === 'undefined' || typeof SUPABASE_ANON_KEY === 'undefined') {
+    toast('请先配置 config.js！参考 config.example.js', 'error');
+    $('conversationList').innerHTML = '<div class="empty-state"><p style="color:#fa5151">⚠️ 请先配置 config.js</p></div>';
+    return;
+  }
+
+  state.supabase = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+  await initIdentity();
   renderMyInfo();
 
   try {
