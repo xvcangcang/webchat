@@ -369,6 +369,81 @@ async function leaveGroup(convId) {
   return true;
 }
 
+async function clearChatHistory() {
+  const convId = state.currentConvId;
+  if (!convId) return;
+
+  const { error } = await state.supabase
+    .from('messages')
+    .delete()
+    .eq('conversation_id', convId);
+
+  if (error) { console.error('Clear chat error:', error); toast('清空失败', 'error'); return; }
+
+  state.messages[convId] = [];
+  renderMessages(convId);
+  toast('聊天记录已清空');
+}
+
+async function deleteFriend() {
+  const conv = state.conversations.find(c => c.id === state.currentConvId);
+  if (!conv) return;
+
+  const other = conv.members.find(m => m.user_id !== state.myId);
+  if (!other) return;
+
+  // 1. 删除好友关系（双向）
+  await state.supabase.from('contacts').delete()
+    .or(`and(user_id.eq.${state.myId},contact_id.eq.${other.user_id}),and(user_id.eq.${other.user_id},contact_id.eq.${state.myId})`);
+
+  // 2. 删除会话及消息
+  await state.supabase.from('messages').delete().eq('conversation_id', conv.id);
+  await state.supabase.from('conversation_members').delete().eq('conversation_id', conv.id);
+  await state.supabase.from('conversations').delete().eq('id', conv.id);
+
+  // 3. 更新本地状态
+  delete state.messages[conv.id];
+  state.currentConvId = null;
+  await loadContacts();
+  await loadConversations();
+  refreshSubscription();
+  renderConversationList();
+  renderChatEmpty();
+  toast('已删除好友');
+}
+
+async function blockUser() {
+  const conv = state.conversations.find(c => c.id === state.currentConvId);
+  if (!conv) return;
+
+  const other = conv.members.find(m => m.user_id !== state.myId);
+  if (!other) return;
+
+  // 1. 先删除好友关系
+  await state.supabase.from('contacts').delete()
+    .or(`and(user_id.eq.${state.myId},contact_id.eq.${other.user_id}),and(user_id.eq.${other.user_id},contact_id.eq.${state.myId})`);
+
+  // 2. 删除会话及消息
+  await state.supabase.from('messages').delete().eq('conversation_id', conv.id);
+  await state.supabase.from('conversation_members').delete().eq('conversation_id', conv.id);
+  await state.supabase.from('conversations').delete().eq('id', conv.id);
+
+  // 3. 记录拉黑（存 localStorage，因为没有 blocks 表）
+  const blocked = JSON.parse(localStorage.getItem('webchat_blocked') || '[]');
+  if (!blocked.includes(other.user_id)) blocked.push(other.user_id);
+  localStorage.setItem('webchat_blocked', JSON.stringify(blocked));
+
+  // 4. 更新本地状态
+  delete state.messages[conv.id];
+  state.currentConvId = null;
+  await loadContacts();
+  await loadConversations();
+  refreshSubscription();
+  renderConversationList();
+  renderChatEmpty();
+  toast('已拉黑用户');
+}
+
 // ---------- 发送消息 ----------
 async function sendMessage(content) {
   if (!content.trim() || !state.currentConvId) return;
@@ -984,10 +1059,61 @@ function bindEvents() {
     renderConversationList();
   });
 
+  // 聊天菜单
+  $('btnChatMenu').addEventListener('click', (e) => {
+    e.stopPropagation();
+    const menu = $('chatMenu');
+    // 根据会话类型显示/隐藏选项
+    const conv = state.conversations.find(c => c.id === state.currentConvId);
+    const isGroup = conv?.type === 'group';
+    $('menuDeleteFriend').style.display = isGroup ? 'none' : 'flex';
+    $('menuBlockUser').style.display = isGroup ? 'none' : 'flex';
+    $('menuInviteMember').style.display = isGroup ? 'flex' : 'none';
+    $('menuLeaveGroup').style.display = isGroup ? 'flex' : 'none';
+    menu.style.display = menu.style.display === 'none' ? 'block' : 'none';
+  });
+
+  // 清空聊天记录
+  $('menuClearChat').addEventListener('click', async () => {
+    $('chatMenu').style.display = 'none';
+    if (!confirm('确定清空所有聊天记录？此操作不可撤销。')) return;
+    await clearChatHistory();
+  });
+
   // 会话信息
-  $('btnChatInfo').addEventListener('click', () => {
+  $('menuChatInfo').addEventListener('click', () => {
+    $('chatMenu').style.display = 'none';
     renderChatInfo();
     openModal('modalChatInfo');
+  });
+
+  // 邀请入群
+  $('menuInviteMember').addEventListener('click', () => {
+    $('chatMenu').style.display = 'none';
+    renderInviteMemberSelect();
+    openModal('modalInviteMember');
+  });
+
+  // 删除好友
+  $('menuDeleteFriend').addEventListener('click', async () => {
+    $('chatMenu').style.display = 'none';
+    if (!confirm('确定删除该好友？聊天记录将被清除。')) return;
+    await deleteFriend();
+  });
+
+  // 拉黑用户
+  $('menuBlockUser').addEventListener('click', async () => {
+    $('chatMenu').style.display = 'none';
+    if (!confirm('确定拉黑该用户？将自动删除好友并清除聊天记录。')) return;
+    await blockUser();
+  });
+
+  // 退出群聊
+  $('menuLeaveGroup').addEventListener('click', async () => {
+    $('chatMenu').style.display = 'none';
+    if (!confirm('确定退出群聊？')) return;
+    const ok = await leaveGroup(state.currentConvId);
+    toast(ok ? '已退出群聊' : '退出失败', ok ? '' : 'error');
   });
 
   // 模态框关闭 — 事件委托
