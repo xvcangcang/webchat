@@ -396,6 +396,11 @@ async function sendMessage(content) {
 
 // ---------- 实时订阅 ----------
 function subscribeRealtime() {
+  // 构建用户参与的会话 ID 集合，实时过滤
+  function myConvIds() {
+    return new Set(state.conversations.map(c => c.id));
+  }
+
   state.subscription = state.supabase
     .channel('messages-realtime')
     .on('postgres_changes', {
@@ -404,7 +409,10 @@ function subscribeRealtime() {
       table: 'messages',
     }, (payload) => {
       const msg = payload.new;
+      // 忽略自己发的（本地已处理）
       if (msg.sender_id === state.myId) return;
+      // 只处理自己参与的会话的消息
+      if (!myConvIds().has(msg.conversation_id)) return;
 
       if (!state.messages[msg.conversation_id]) state.messages[msg.conversation_id] = [];
       state.messages[msg.conversation_id].push(msg);
