@@ -855,6 +855,21 @@ function bindEvents() {
       $('aboutVersion').textContent = APP_VERSION;
     }
 
+    // 渲染更新日志
+    if (typeof CHANGELOG !== 'undefined') {
+      $('changelogList').innerHTML = CHANGELOG.map(entry => `
+        <div class="changelog-entry">
+          <div class="changelog-version">
+            <span class="changelog-version-tag">${entry.version}</span>
+            <span class="changelog-version-date">${entry.date}</span>
+          </div>
+          <ul class="changelog-changes">
+            ${entry.changes.map(c => `<li>${c}</li>`).join('')}
+          </ul>
+        </div>
+      `).join('');
+    }
+
     openModal('modalSettings');
   });
 
@@ -868,7 +883,7 @@ function bindEvents() {
     const section = navItem.dataset.section;
     document.querySelectorAll('.settings-section').forEach(s => s.style.display = 'none');
 
-    const sectionMap = { profile: 'sectionProfile', appearance: 'sectionAppearance', about: 'sectionAbout' };
+    const sectionMap = { profile: 'sectionProfile', appearance: 'sectionAppearance', about: 'sectionAbout', changelog: 'sectionChangelog' };
     const target = $(sectionMap[section]);
     if (target) target.style.display = 'block';
   });
