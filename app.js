@@ -1068,6 +1068,7 @@ function bindEvents() {
     const isGroup = conv?.type === 'group';
     $('menuDeleteFriend').style.display = isGroup ? 'none' : 'flex';
     $('menuBlockUser').style.display = isGroup ? 'none' : 'flex';
+    $('menuChatInfo').style.display = isGroup ? 'flex' : 'none';
     $('menuInviteMember').style.display = isGroup ? 'flex' : 'none';
     $('menuLeaveGroup').style.display = isGroup ? 'flex' : 'none';
     menu.style.display = menu.style.display === 'none' ? 'block' : 'none';
