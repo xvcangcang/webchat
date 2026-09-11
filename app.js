@@ -12,7 +12,7 @@ const state = {
   conversations: [],
   currentConvId: null,
   messages: {},           // convId -> [msg]
-  subscription: null,
+  channels: {},           // convId -> broadcast channel
 };
 
 // ---------- 工具函数 ----------
@@ -217,8 +217,7 @@ async function loadConversations() {
     return tb.localeCompare(ta);
   });
 
-  // 会话变化后刷新实时订阅（只在订阅已初始化时）
-  if (state.subscription) refreshSubscription();
+  // 会话变化后刷新实时订阅（由调用方显式触发，不在这里自动调）
 }
 
 async function loadMessages(convId) {
@@ -295,6 +294,7 @@ async function getOrCreateDirectConversation(contactId) {
   if (e2) { console.error('Add members error:', e2); return null; }
 
   await loadConversations();
+  refreshSubscription();
   renderConversationList();
   return conv.id;
 }
@@ -324,6 +324,7 @@ async function createGroupConversation(name, memberIds) {
   });
 
   await loadConversations();
+  refreshSubscription();
   renderConversationList();
   return conv.id;
 }
@@ -362,6 +363,7 @@ async function leaveGroup(convId) {
   delete state.messages[convId];
   state.currentConvId = null;
   await loadConversations();
+  refreshSubscription();
   renderConversationList();
   renderChatEmpty();
   return true;
@@ -392,64 +394,56 @@ async function sendMessage(content) {
   renderMessages(convId);
   scrollMessagesToBottom();
 
+  // 广播给同频道的其他用户
+  broadcastMessage(data);
+
   await loadConversations();
   renderConversationList();
   return true;
 }
 
-// ---------- 实时订阅 ----------
+// ---------- 实时订阅（Broadcast 方案）----------
 function subscribeRealtime() {
   refreshSubscription();
 }
 
 function refreshSubscription() {
-  // 取消旧订阅
-  if (state.subscription) {
-    state.supabase.removeChannel(state.subscription);
+  // 移除所有旧频道
+  if (state.channels) {
+    Object.values(state.channels).forEach(ch => state.supabase.removeChannel(ch));
   }
+  state.channels = {};
 
-  const convIds = state.conversations.map(c => c.id);
-  if (convIds.length === 0) {
-    // 没有会话时只订阅自己的消息（不会触发通知）
-    state.subscription = state.supabase
-      .channel('messages-realtime')
-      .on('postgres_changes', {
-        event: 'INSERT',
-        schema: 'public',
-        table: 'messages',
-        filter: `sender_id=eq.${state.myId}`,
-      }, () => {})
+  state.conversations.forEach(conv => {
+    const ch = state.supabase
+      .channel('conv-' + conv.id)
+      .on('broadcast', { event: 'msg' }, (payload) => {
+        const msg = payload.payload;
+        if (msg.sender_id === state.myId) return;
+
+        if (!state.messages[conv.id]) state.messages[conv.id] = [];
+        state.messages[conv.id].push(msg);
+
+        if (state.currentConvId === conv.id) {
+          renderMessages(conv.id);
+          scrollMessagesToBottom();
+        } else {
+          toast(`新消息: ${msg.content.slice(0, 30)}`);
+        }
+        // 不调 loadConversations 避免循环，直接更新列表
+        loadConversations();
+      })
       .subscribe();
-    return;
+
+    state.channels[conv.id] = ch;
+  });
+}
+
+function broadcastMessage(msg) {
+  const ch = state.channels?.[msg.conversation_id];
+  if (ch) {
+    ch.send({ type: 'broadcast', event: 'msg', payload: msg });
   }
-
-  // 服务端过滤：只接收自己参与的会话的消息
-  const filterStr = `conversation_id=in.(${convIds.map(id => `"${id}"`).join(',')})`;
-
-  state.subscription = state.supabase
-    .channel('messages-realtime')
-    .on('postgres_changes', {
-      event: 'INSERT',
-      schema: 'public',
-      table: 'messages',
-      filter: filterStr,
-    }, (payload) => {
-      const msg = payload.new;
-      if (msg.sender_id === state.myId) return;
-
-      if (!state.messages[msg.conversation_id]) state.messages[msg.conversation_id] = [];
-      state.messages[msg.conversation_id].push(msg);
-
-      if (state.currentConvId === msg.conversation_id) {
-        renderMessages(msg.conversation_id);
-        scrollMessagesToBottom();
-      } else {
-        toast(`新消息: ${msg.content.slice(0, 30)}`);
-      }
-
-      loadConversations().then(() => renderConversationList());
-    })
-    .subscribe();
 }
 
 // ---------- UI 渲染 ----------
@@ -949,6 +943,7 @@ function bindEvents() {
     if (ok) {
       closeModal('modalInviteMember');
       await loadConversations();
+      refreshSubscription();
       await openConversation(state.currentConvId);
       toast('邀请成功', 'success');
     } else {
