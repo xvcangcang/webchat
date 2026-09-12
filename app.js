@@ -1289,18 +1289,35 @@ function bindEvents() {
   $('searchInput').addEventListener('input', () => renderConversationList());
 
   // 发送消息
-  $('btnSend').addEventListener('click', async () => {
-    const input = $('messageInput');
-    const ok = await sendMessage(input.value);
-    if (ok !== false) { input.value = ''; input.style.height = 'auto'; }
-  });
+  // 发送消息 — 先清空输入框防止刷屏
+  let _sending = false;
 
-  $('messageInput').addEventListener('keydown', async (e) => {
+  async function handleSend() {
+    const input = $('messageInput');
+    const text = input.value.trim();
+    if (!text || _sending) return;
+
+    // 立即清空输入框
+    input.value = '';
+    input.style.height = 'auto';
+    _sending = true;
+
+    const ok = await sendMessage(text);
+    _sending = false;
+
+    // 发送失败时恢复内容
+    if (ok === false) {
+      input.value = text;
+      input.style.height = 'auto';
+    }
+  }
+
+  $('btnSend').addEventListener('click', handleSend);
+
+  $('messageInput').addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
-      const input = $('messageInput');
-      const ok = await sendMessage(input.value);
-      if (ok !== false) { input.value = ''; input.style.height = 'auto'; }
+      handleSend();
     }
   });
 
