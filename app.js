@@ -100,6 +100,40 @@ async function generateUniqueId() {
 }
 
 // ---------- 主题系统 ----------
+// ---------- 消息通知 ----------
+const notify = {
+  enabled() {
+    return localStorage.getItem('webchat_notify') !== 'off';
+  },
+
+  async requestPermission() {
+    if (!('Notification' in window)) return false;
+    if (Notification.permission === 'granted') return true;
+    if (Notification.permission === 'denied') return false;
+    const result = await Notification.requestPermission();
+    return result === 'granted';
+  },
+
+  send(title, body, convId) {
+    if (!this.enabled()) return;
+    if (Notification.permission !== 'granted') return;
+    // 页面在前台时不通知（已经有 toast）
+    if (document.visibilityState === 'visible') return;
+
+    const n = new Notification(title, {
+      body: body.slice(0, 100),
+      icon: 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><rect fill="%2307c160" width="100" height="100" rx="20"/><text x="50" y="68" text-anchor="middle" fill="white" font-size="50" font-family="sans-serif">W</text></svg>',
+      tag: 'webchat-' + convId,  // 同一会话合并通知
+    });
+
+    n.onclick = () => {
+      window.focus();
+      if (convId) openConversation(convId);
+      n.close();
+    };
+  }
+};
+
 function applyTheme() {
   const theme = localStorage.getItem('webchat_theme') || 'light';
   document.documentElement.setAttribute('data-theme', theme);
@@ -618,6 +652,10 @@ function refreshSubscription() {
           scrollMessagesToBottom();
         } else {
           toast(`新消息: ${msg.content.slice(0, 30)}`);
+          // 发送浏览器通知
+          const sender = conv.members.find(m => m.user_id === msg.sender_id);
+          const senderName = sender?.display_name || '新消息';
+          notify.send(senderName, msg.content, conv.id);
         }
         // 不调 loadConversations 避免循环，直接更新列表
         loadConversations();
@@ -1013,8 +1051,14 @@ function bindEvents() {
 
     // 同步主题切换
     const currentTheme = localStorage.getItem('webchat_theme') || 'light';
-    document.querySelectorAll('.theme-toggle').forEach(t => {
+    document.querySelectorAll('.theme-toggle[data-theme]').forEach(t => {
       t.classList.toggle('active', t.dataset.theme === currentTheme);
+    });
+
+    // 同步通知开关
+    const currentNotify = localStorage.getItem('webchat_notify') || 'on';
+    document.querySelectorAll('.theme-toggle[data-notify]').forEach(t => {
+      t.classList.toggle('active', t.dataset.notify === currentNotify);
     });
 
     // 重置到第一个分类
@@ -1070,14 +1114,31 @@ function bindEvents() {
   });
 
   // 主题切换 — 点击即生效
-  document.querySelectorAll('.theme-toggle').forEach(toggle => {
+  document.querySelectorAll('.theme-toggle[data-theme]').forEach(toggle => {
     toggle.addEventListener('click', () => {
-      document.querySelectorAll('.theme-toggle').forEach(t => t.classList.remove('active'));
+      document.querySelectorAll('.theme-toggle[data-theme]').forEach(t => t.classList.remove('active'));
       toggle.classList.add('active');
       const theme = toggle.dataset.theme;
       localStorage.setItem('webchat_theme', theme);
       document.documentElement.setAttribute('data-theme', theme);
       toast(theme === 'dark' ? '已切换深色模式' : '已切换浅色模式', 'success');
+    });
+  });
+
+  // 通知开关
+  document.querySelectorAll('.theme-toggle[data-notify]').forEach(toggle => {
+    toggle.addEventListener('click', () => {
+      document.querySelectorAll('.theme-toggle[data-notify]').forEach(t => t.classList.remove('active'));
+      toggle.classList.add('active');
+      const val = toggle.dataset.notify;
+      localStorage.setItem('webchat_notify', val);
+      if (val === 'on') {
+        notify.requestPermission().then(ok => {
+          toast(ok ? '通知已开启' : '浏览器拒绝了通知权限', ok ? 'success' : 'error');
+        });
+      } else {
+        toast('通知已关闭');
+      }
     });
   });
 
@@ -1366,6 +1427,9 @@ async function init() {
   setTimeout(() => $('loadingScreen').remove(), 500);
 
   toast('连接成功');
+
+  // 请求通知权限
+  notify.requestPermission();
 }
 
 init();

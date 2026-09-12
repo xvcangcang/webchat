@@ -1,5 +1,13 @@
 const CHANGELOG = [
   {
+    version: 'v1.5.0',
+    date: '2026-09-06',
+    changes: [
+      '新增消息通知（浏览器原生通知，支持桌面和手机）',
+      '设置中可开关通知',
+    ]
+  },
+  {
     version: 'v1.4.0',
     date: '2026-09-06',
     changes: [
