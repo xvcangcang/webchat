@@ -1,5 +1,13 @@
 const CHANGELOG = [
   {
+    version: 'v1.6.0',
+    date: '2026-09-12',
+    changes: [
+      '实时消息改为轮询方案，彻底解决私聊消息全站广播 bug',
+      '发送消息后输入框立即清空，防止重复刷屏',
+    ]
+  },
+  {
     version: 'v1.5.0',
     date: '2026-09-06',
     changes: [

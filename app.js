@@ -625,53 +625,75 @@ async function sendMessage(content) {
   return true;
 }
 
-// ---------- 实时订阅（Broadcast 方案）----------
-function subscribeRealtime() {
-  refreshSubscription();
-}
+// ---------- 实时消息（轮询方案）----------
+let _pollTimer = null;
+let _lastPollTime = null;
 
-function refreshSubscription() {
-  // 移除所有旧频道
+function subscribeRealtime() {
+  // 先清理旧的 Broadcast 频道
   if (state.channels) {
     Object.values(state.channels).forEach(ch => state.supabase.removeChannel(ch));
   }
   state.channels = {};
 
-  state.conversations.forEach(conv => {
-    const ch = state.supabase
-      .channel('conv-' + conv.id)
-      .on('broadcast', { event: 'msg' }, (payload) => {
-        const msg = payload.payload;
-        if (msg.sender_id === state.myId) return;
+  // 启动轮询
+  _lastPollTime = new Date().toISOString();
+  clearInterval(_pollTimer);
+  _pollTimer = setInterval(pollMessages, 3000);
+}
 
-        if (!state.messages[conv.id]) state.messages[conv.id] = [];
-        state.messages[conv.id].push(msg);
+function refreshSubscription() {
+  // 更新轮询时间基准（会话变化后重新开始）
+  _lastPollTime = new Date().toISOString();
+}
 
-        if (state.currentConvId === conv.id) {
-          renderMessages(conv.id);
-          scrollMessagesToBottom();
-        } else {
-          toast(`新消息: ${msg.content.slice(0, 30)}`);
-          // 发送浏览器通知
-          const sender = conv.members.find(m => m.user_id === msg.sender_id);
-          const senderName = sender?.display_name || '新消息';
-          notify.send(senderName, msg.content, conv.id);
-        }
-        // 不调 loadConversations 避免循环，直接更新列表
-        loadConversations();
-      })
-      .subscribe();
+async function pollMessages() {
+  if (!state.supabase || state.conversations.length === 0) return;
 
-    state.channels[conv.id] = ch;
+  const convIds = state.conversations.map(c => c.id);
+
+  const { data, error } = await state.supabase
+    .from('messages')
+    .select('id, conversation_id, sender_id, content, msg_type, created_at')
+    .in('conversation_id', convIds)
+    .gt('created_at', _lastPollTime)
+    .neq('sender_id', state.myId)
+    .order('created_at', { ascending: true });
+
+  if (error || !data || data.length === 0) return;
+
+  // 更新时间基准
+  _lastPollTime = data[data.length - 1].created_at;
+
+  // 按会话分组处理
+  const byConv = {};
+  data.forEach(msg => {
+    if (!byConv[msg.conversation_id]) byConv[msg.conversation_id] = [];
+    byConv[msg.conversation_id].push(msg);
   });
+
+  Object.entries(byConv).forEach(([convId, msgs]) => {
+    if (!state.messages[convId]) state.messages[convId] = [];
+    state.messages[convId].push(...msgs);
+
+    const conv = state.conversations.find(c => c.id === convId);
+
+    if (state.currentConvId === convId) {
+      renderMessages(convId);
+      scrollMessagesToBottom();
+    } else {
+      const lastMsg = msgs[msgs.length - 1];
+      toast(`新消息: ${lastMsg.content.slice(0, 30)}`);
+      const sender = conv?.members.find(m => m.user_id === lastMsg.sender_id);
+      notify.send(sender?.display_name || '新消息', lastMsg.content, convId);
+    }
+  });
+
+  loadConversations();
 }
 
-function broadcastMessage(msg) {
-  const ch = state.channels?.[msg.conversation_id];
-  if (ch) {
-    ch.send({ type: 'broadcast', event: 'msg', payload: msg });
-  }
-}
+// 已废弃，保留空函数避免报错
+function broadcastMessage() {}
 
 // ---------- UI 渲染 ----------
 function renderMyInfo() {
