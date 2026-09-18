@@ -274,6 +274,31 @@ body {
   border-radius: 3px;
 }
 
+/* 头像外层容器（定位未读红点） */
+.conv-avatar-wrap {
+  position: relative;
+  flex-shrink: 0;
+}
+
+/* 未读消息红点 */
+.unread-badge {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 9px;
+  background: #fa5151;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 18px;
+  text-align: center;
+  pointer-events: none;
+  box-shadow: 0 0 0 2px var(--bg-primary, #fff);
+}
+
 .conv-body {
   flex: 1;
   min-width: 0;

@@ -12,6 +12,7 @@ const state = {
   conversations: [],
   currentConvId: null,
   messages: {},           // convId -> [msg]
+  unreadCounts: {},       // convId -> 未读消息数
   channels: {},           // convId -> broadcast channel
 };
 
@@ -59,6 +60,13 @@ function toast(msg, type = '') {
 }
 
 function $(id) { return document.getElementById(id); }
+
+function unreadBadgeHtml(convId) {
+  const count = state.unreadCounts[convId] || 0;
+  if (count === 0) return '';
+  const display = count > 99 ? '99+' : String(count);
+  return `<span class="unread-badge">${display}</span>`;
+}
 
 // ---------- 身份码系统 ----------
 async function initIdentity() {
@@ -682,6 +690,9 @@ async function pollMessages() {
       renderMessages(convId);
       scrollMessagesToBottom();
     } else {
+      // 累加未读消息数
+      if (!state.unreadCounts[convId]) state.unreadCounts[convId] = 0;
+      state.unreadCounts[convId] += msgs.length;
       const lastMsg = msgs[msgs.length - 1];
       toast(`新消息: ${lastMsg.content.slice(0, 30)}`);
       const sender = conv?.members.find(m => m.user_id === lastMsg.sender_id);
@@ -728,13 +739,13 @@ function renderConversationList() {
 
     let avatarHtml;
     if (isGroup && conv.members.length >= 2) {
-      avatarHtml = `<div class="conv-avatar group-avatar" style="background:${conv.avatar_color}">
+      avatarHtml = `<div class="conv-avatar-wrap"><div class="conv-avatar group-avatar" style="background:${conv.avatar_color}">
         ${conv.members.slice(0, 4).map(m =>
           `<span style="background:${m.avatar_color}">${getInitial(m.display_name)}</span>`
         ).join('')}
-      </div>`;
+      </div>${unreadBadgeHtml(conv.id)}</div>`;
     } else {
-      avatarHtml = `<div class="conv-avatar" style="background:${conv.avatar_color}">${getInitial(conv.name)}</div>`;
+      avatarHtml = `<div class="conv-avatar-wrap"><div class="conv-avatar" style="background:${conv.avatar_color}">${getInitial(conv.name)}</div>${unreadBadgeHtml(conv.id)}</div>`;
     }
 
     return `<div class="conv-item ${isActive ? 'active' : ''}" data-conv-id="${conv.id}">
@@ -776,6 +787,8 @@ function renderChatEmpty() {
 
 async function openConversation(convId) {
   state.currentConvId = convId;
+  // 清零未读计数
+  state.unreadCounts[convId] = 0;
   const conv = state.conversations.find(c => c.id === convId);
   if (!conv) return;
 

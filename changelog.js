@@ -1,5 +1,12 @@
 const CHANGELOG = [
   {
+    version: 'v1.7.0',
+    date: '2026-09-18',
+    changes: [
+      '会话列表头像添加未读消息红色角标，超过 99 显示 99+',
+    ]
+  },
+  {
     version: 'v1.6.0',
     date: '2026-09-12',
     changes: [
