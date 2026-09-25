@@ -27,6 +27,11 @@ function randomColor() {
   return colors[Math.floor(Math.random() * colors.length)];
 }
 
+// 颜色白名单：只放行 #RRGGBB，防止拼进 style 属性的 XSS 注入
+function safeColor(c, fallback = '#999') {
+  return /^#[0-9A-Fa-f]{6}$/.test(c || '') ? c : fallback;
+}
+
 function getInitial(name) {
   if (!name) return '?';
   return name.charAt(0).toUpperCase();
@@ -116,8 +121,11 @@ const notify = {
     // 页面在前台时不通知（已经有 toast）
     if (document.visibilityState === 'visible') return;
 
+    // 默认不预览消息正文，防止锁屏泄露聊天内容（可在设置中开启）
+    const previewOn = localStorage.getItem('webchat_notify_preview') === 'on';
+
     const n = new Notification(title, {
-      body: body.slice(0, 100),
+      body: previewOn ? body.slice(0, 100) : '收到新消息',
       icon: 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><rect fill="%2307c160" width="100" height="100" rx="20"/><text x="50" y="68" text-anchor="middle" fill="white" font-size="50" font-family="sans-serif">W</text></svg>',
       tag: 'webchat-' + convId,  // 同一会话合并通知
     });
@@ -210,7 +218,7 @@ async function loadContacts() {
     contact_id: c.contact_id,
     remark: c.remark,
     display_name: c.users?.display_name || '未知用户',
-    avatar_color: c.users?.avatar_color || '#999',
+    avatar_color: safeColor(c.users?.avatar_color, '#999'),
   }));
 }
 
@@ -252,7 +260,7 @@ async function loadConversations() {
         user_id: m.user_id,
         role: m.role || 'member',
         display_name: m.users?.display_name || '未知',
-        avatar_color: m.users?.avatar_color || '#999',
+        avatar_color: safeColor(m.users?.avatar_color, '#999'),
       }));
 
     const lastMsg = lastMsgMap[conv.id];
@@ -272,7 +280,7 @@ async function loadConversations() {
       id: conv.id,
       type: conv.type,
       name: displayName || '未命名会话',
-      avatar_color: avatarColor || '#999',
+      avatar_color: safeColor(avatarColor, '#999'),
       members,
       lastMsg: lastMsg ? { content: lastMsg.content, sender_id: lastMsg.sender_id, time: lastMsg.created_at } : null,
     };
@@ -1135,6 +1143,12 @@ function bindEvents() {
       t.classList.toggle('active', t.dataset.notify === currentNotify);
     });
 
+    // 同步通知预览开关
+    const currentPreview = localStorage.getItem('webchat_notify_preview') || 'off';
+    document.querySelectorAll('.theme-toggle[data-preview]').forEach(t => {
+      t.classList.toggle('active', t.dataset.preview === currentPreview);
+    });
+
     // 重置到第一个分类
     document.querySelectorAll('.settings-nav-item').forEach(n => n.classList.remove('active'));
     document.querySelector('.settings-nav-item[data-section="profile"]').classList.add('active');
@@ -1213,6 +1227,17 @@ function bindEvents() {
       } else {
         toast('通知已关闭');
       }
+    });
+  });
+
+  // 通知预览开关（默认关闭：通知不显示消息正文）
+  document.querySelectorAll('.theme-toggle[data-preview]').forEach(toggle => {
+    toggle.addEventListener('click', () => {
+      document.querySelectorAll('.theme-toggle[data-preview]').forEach(t => t.classList.remove('active'));
+      toggle.classList.add('active');
+      const on = toggle.dataset.preview === 'on';
+      localStorage.setItem('webchat_notify_preview', toggle.dataset.preview);
+      toast(on ? '通知将显示消息内容' : '通知不再显示消息内容', 'success');
     });
   });
 
