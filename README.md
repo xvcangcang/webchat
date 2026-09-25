@@ -71,9 +71,11 @@ webchat/
 ├── index.html              # 主页面
 ├── style.css               # 微信风格样式
 ├── app.js                  # 核心应用逻辑
-├── config.js               # Supabase 配置（需自行创建）
+├── config.js               # Supabase 配置（需自行创建，不入库）
 ├── config.example.js       # 配置模板
 ├── supabase-setup.sql      # 数据库初始化脚本
+├── test/frontend.test.js   # 前端集成测试（jsdom + 假后端）
+├── package.json            # 测试依赖（npm test 运行）
 └── README.md               # 本文件
 ```
 
@@ -93,6 +95,17 @@ webchat/
 - 好友关系为"单向添加、双向确认"，对方加回后才互相可见
 - 无端到端加密，消息在服务端明文存储（Supabase 静态加密之外）
 - 升级提示：如果仓库曾公开提交过 `config.js`，旧 key 已泄露——请到控制台**轮换 key**，并确认升级前已执行新的 `supabase-setup.sql`（否则旧 key 配合旧的全开放策略仍可读写全库）
+
+## 🧪 测试
+
+前端集成测试基于 jsdom + 假 Supabase 后端，无需真实后端即可运行：
+
+```bash
+npm install
+npm test
+```
+
+覆盖场景：初始化登录流程、身份码占用换码重试、`addContact` 错误码映射（23503/23505）、单向插入、`avatar_color` XSS 白名单拦截、通知默认不预览消息正文。
 
 ## 📝 使用说明
 

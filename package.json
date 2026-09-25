@@ -1,0 +1,12 @@
+{
+  "name": "webchat",
+  "version": "2.0.0",
+  "private": true,
+  "description": "身份码聊天平台 — 纯前端 + Supabase",
+  "scripts": {
+    "test": "node test/frontend.test.js"
+  },
+  "devDependencies": {
+    "jsdom": "^30.1.1"
+  }
+}
