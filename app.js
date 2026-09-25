@@ -9,6 +9,7 @@ const state = {
   myName: '',
   myColor: '',
   contacts: [],
+  friendRequests: { incoming: [], outgoing: [] },  // 好友申请（新的朋友）
   conversations: [],
   currentConvId: null,
   messages: {},           // convId -> [msg]
@@ -206,20 +207,56 @@ function startHeartbeat() {
 }
 
 // ---------- 加载数据 ----------
+// 单行模型签名（id:status 排序串），供轮询做变更检测
+let _contactsSig = '';
+
+function renderFriendRequestBadge() {
+  const el = $('friendReqBadge');
+  if (!el) return;  // UI 未就绪（步骤 4 前）
+  const n = state.friendRequests.incoming.length;
+  el.textContent = n > 99 ? '99+' : String(n);
+  el.style.display = n > 0 ? '' : 'none';
+}
+
 async function loadContacts() {
+  // 双向查询：单行模型下行方向在发起方，接收方需靠 contact_id = 我 查到
   const { data, error } = await state.supabase
     .from('contacts')
-    .select('contact_id, remark, users!contacts_contact_id_fkey(display_name, avatar_color)')
-    .eq('user_id', state.myId);
+    .select(`id, user_id, contact_id, status, remark,
+      owner:users!contacts_user_id_fkey(display_name, avatar_color),
+      target:users!contacts_contact_id_fkey(display_name, avatar_color)`)
+    .or(`user_id.eq.${state.myId},contact_id.eq.${state.myId}`);
 
   if (error) { console.error('Load contacts error:', error); return; }
 
-  state.contacts = (data || []).map(c => ({
-    contact_id: c.contact_id,
-    remark: c.remark,
-    display_name: c.users?.display_name || '未知用户',
-    avatar_color: safeColor(c.users?.avatar_color, '#999'),
-  }));
+  const friends = [];
+  const incoming = [];
+  const outgoing = [];
+  for (const r of (data || [])) {
+    const iAmOwner = r.user_id === state.myId;
+    const other = iAmOwner ? r.contact_id : r.user_id;
+    const u = iAmOwner ? r.target : r.owner;   // 对侧资料（users_select 反向子句保证可见）
+    const row = {
+      id: r.id,
+      contact_id: other,
+      remark: r.remark,
+      display_name: u?.display_name || '未知用户',
+      avatar_color: safeColor(u?.avatar_color, '#999'),
+    };
+    if (r.status === 'accepted') {
+      // 保持旧 shape：state.contacts 的 5 个读取方无需改动
+      friends.push({ contact_id: row.contact_id, remark: row.remark, display_name: row.display_name, avatar_color: row.avatar_color });
+    } else if (iAmOwner) {
+      outgoing.push(row);
+    } else {
+      incoming.push(row);
+    }
+  }
+  state.contacts = friends;
+  state.friendRequests.incoming = incoming;
+  state.friendRequests.outgoing = outgoing;
+  _contactsSig = (data || []).map(r => `${r.id}:${r.status}`).sort().join('|');
+  renderFriendRequestBadge();
 }
 
 async function loadConversations() {

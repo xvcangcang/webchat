@@ -43,6 +43,7 @@ function makeBuilder(table, hooks, calls) {
     neq(c, v) { ops.filters.push(['neq', c, v]); return b; },
     in(c, v) { ops.filters.push(['in', c, v]); return b; },
     gt(c, v) { ops.filters.push(['gt', c, v]); return b; },
+    or(c) { ops.filters.push(['or', c]); return b; },
     order() { return b; }, limit() { return b; },
     single() { ops.single = true; return b; },
     maybeSingle() { ops.single = true; return b; },
@@ -221,7 +222,8 @@ async function test3_addContact() {
       }
       if (table === 'contacts' && ops.method === 'select') {
         if (!inserted) return { data: [], error: null };
-        return { data: [{ contact_id: '88888', remark: null, users: { display_name: '测试好友', avatar_color: '#4A90D9' } }], error: null };
+        // 单行模型新 shape：行方向在发起方，测试走 iAmOwner=false 的对侧资料分支
+        return { data: [{ id: 'c1', user_id: '88888', contact_id: '00000', status: 'accepted', remark: null, owner: { display_name: '测试好友', avatar_color: '#4A90D9' }, target: null }], error: null };
       }
       if (table === 'conversations' && ops.method === 'insert') {
         convInserts++;
