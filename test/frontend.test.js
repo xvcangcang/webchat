@@ -289,6 +289,16 @@ async function test6_acceptRequest() {
   const done = await app.waitInit();
   assert(!!done, '初始化完成');
 
+  // 徽标与列表渲染（Step 4）
+  const badge = app.w.document.getElementById('friendReqBadge');
+  assert(badge && badge.textContent === '1' && badge.style.display !== 'none', '徽标显示 1 条未读申请');
+  app.w.renderFriendRequests();
+  const inHtml = app.w.document.getElementById('incomingReqList').innerHTML;
+  assert(inHtml.includes('申请人'), '申请列表渲染申请人昵称');
+  assert(inHtml.includes('data-action="accept"') && inHtml.includes('data-action="decline"'), '渲染接受/拒绝按钮');
+  const outHtml = app.w.document.getElementById('outgoingReqList').innerHTML;
+  assert(outHtml.includes('暂无已发送的申请'), '已发送区为空状态');
+
   // 不存在的 id → 本地查找即失败，不触碰 DB
   const bad = await app.w.acceptFriendRequest('nope');
   assert(bad && bad.error === '该申请已失效', '不存在的申请 id 直接返回失效');

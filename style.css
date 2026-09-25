@@ -712,6 +712,73 @@ body {
 .dropdown-item:hover { background: #f0f0f0; }
 .dropdown-item svg { color: var(--text-secondary); }
 
+.menu-badge {
+  margin-left: auto;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 9px;
+  background: var(--danger);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 18px;
+  text-align: center;
+  box-sizing: border-box;
+}
+
+/* 新的朋友（好友申请列表） */
+.friend-req-section-title {
+  font-size: 12px;
+  color: var(--muted-foreground);
+  margin-bottom: 6px;
+}
+
+.friend-req-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 4px;
+  border-radius: 6px;
+}
+
+.friend-req-row:hover { background: #f5f5f5; }
+.friend-req-row:last-child { margin-bottom: 0; }
+
+.friend-req-row .member-avatar {
+  width: 36px;
+  height: 36px;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  color: #fff;
+  font-weight: 600;
+  flex-shrink: 0;
+}
+
+.friend-req-info { flex: 1; min-width: 0; }
+
+.friend-req-info .member-name {
+  font-size: 14px;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.friend-req-sub {
+  font-size: 12px;
+  color: var(--muted-foreground);
+}
+
+.friend-req-actions {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
 /* Group member select */
 .group-member-select {
   max-height: 200px;

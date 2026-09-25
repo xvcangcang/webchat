@@ -218,6 +218,47 @@ function renderFriendRequestBadge() {
   el.style.display = n > 0 ? '' : 'none';
 }
 
+// 「新的朋友」弹窗列表渲染（操作按钮不带 data-modal，避免被全局关闭器误关）
+function renderFriendRequests() {
+  const incomingEl = $('incomingReqList');
+  const outgoingEl = $('outgoingReqList');
+  if (!incomingEl || !outgoingEl) return;
+
+  if (state.friendRequests.incoming.length === 0) {
+    incomingEl.innerHTML = '<div class="empty-hint">暂无新的申请</div>';
+  } else {
+    incomingEl.innerHTML = state.friendRequests.incoming.map(r => `
+      <div class="friend-req-row" data-req-id="${r.id}">
+        <div class="member-avatar" style="background:${r.avatar_color}">${escapeHtml((r.display_name || '?').charAt(0))}</div>
+        <div class="friend-req-info">
+          <div class="member-name">${escapeHtml(r.display_name)}</div>
+          <div class="friend-req-sub">${r.contact_id} 请求加你为好友</div>
+        </div>
+        <div class="friend-req-actions">
+          <button class="link-btn" data-action="accept">接受</button>
+          <button class="link-btn danger" data-action="decline">拒绝</button>
+        </div>
+      </div>`).join('');
+  }
+
+  if (state.friendRequests.outgoing.length === 0) {
+    outgoingEl.innerHTML = '<div class="empty-hint">暂无已发送的申请</div>';
+  } else {
+    outgoingEl.innerHTML = state.friendRequests.outgoing.map(r => `
+      <div class="friend-req-row" data-req-id="${r.id}">
+        <div class="member-avatar" style="background:${r.avatar_color}">${escapeHtml((r.display_name || '?').charAt(0))}</div>
+        <div class="friend-req-info">
+          <div class="member-name">${escapeHtml(r.display_name)}</div>
+          <div class="friend-req-sub">已发送申请 · ${r.contact_id}</div>
+        </div>
+        <div class="friend-req-actions">
+          <button class="link-btn" disabled>等待验证</button>
+          <button class="link-btn danger" data-action="cancel">取消</button>
+        </div>
+      </div>`).join('');
+  }
+}
+
 async function loadContacts() {
   // 双向查询：单行模型下行方向在发起方，接收方需靠 contact_id = 我 查到
   const { data, error } = await state.supabase
@@ -1378,6 +1419,59 @@ function bindEvents() {
     $('addContactFeedback').textContent = '';
     openModal('modalAddContact');
   });
+
+  // 新的朋友：打开前先刷新申请列表
+  $('menuFriendRequests').addEventListener('click', async () => {
+    await loadContacts();
+    renderFriendRequests();
+    $('friendReqFeedback').textContent = '';
+    openModal('modalFriendRequests');
+  });
+
+  // 弹窗内委托：接受 / 拒绝 / 取消（按钮按 data-action 区分，行由 data-req-id 定位）
+  const handleReqAction = async (e) => {
+    const btn = e.target.closest('[data-action]');
+    if (!btn) return;
+    const row = btn.closest('[data-req-id]');
+    if (!row) return;
+    const reqId = row.dataset.reqId;
+    const action = btn.dataset.action;
+
+    btn.disabled = true;
+    let result;
+    if (action === 'accept') result = await acceptFriendRequest(reqId);
+    else if (action === 'decline') result = await declineFriendRequest(reqId);
+    else if (action === 'cancel') result = await cancelFriendRequest(reqId);
+    else { btn.disabled = false; return; }
+
+    const fb = $('friendReqFeedback');
+    if (result.error) {
+      fb.textContent = result.error;
+      fb.className = 'modal-feedback error';
+      btn.disabled = false;
+      // 失效的申请可能已被对方取消 → 重载以移除该行
+      await loadContacts();
+      renderFriendRequests();
+      renderFriendRequestBadge();
+      return;
+    }
+
+    if (action === 'accept') {
+      fb.textContent = `已接受 ${result.name} 的好友申请，会话已创建`;
+      fb.className = 'modal-feedback success';
+      toast(`你与 ${result.name} 已成为好友`, 'success');
+    } else if (action === 'decline') {
+      fb.textContent = '已拒绝该申请';
+      fb.className = 'modal-feedback success';
+    } else {
+      fb.textContent = '已取消该申请';
+      fb.className = 'modal-feedback success';
+    }
+    renderFriendRequests();
+    renderFriendRequestBadge();
+  };
+  $('incomingReqList').addEventListener('click', handleReqAction);
+  $('outgoingReqList').addEventListener('click', handleReqAction);
 
   $('menuCreateGroup').addEventListener('click', () => {
     renderGroupMemberSelect();
