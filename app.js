@@ -74,8 +74,10 @@ async function initIdentity() {
   let name = localStorage.getItem('webchat_name');
   let color = localStorage.getItem('webchat_color');
 
-  // 如果旧 ID 是 UUID 格式（含 -），清除让它重新生成
-  if (id && id.includes('-')) { id = null; localStorage.removeItem('webchat_id'); }
+  // 身份码只接受 5/6 位数字，格式异常（含旧 UUID）则重新生成
+  if (id && !/^\d{5,6}$/.test(id)) { id = null; localStorage.removeItem('webchat_id'); }
+  // 头像颜色只接受 #RRGGBB，防止本地篡改注入到 style 属性
+  if (color && !/^#[0-9A-Fa-f]{6}$/.test(color)) { color = null; localStorage.removeItem('webchat_color'); }
 
   if (!name) { name = '用户'; localStorage.setItem('webchat_name', name); }
   if (!color) { color = randomColor(); localStorage.setItem('webchat_color', color); }
@@ -83,28 +85,14 @@ async function initIdentity() {
   state.myName = name;
   state.myColor = color;
 
-  // 生成唯一 5 位身份码
+  // 生成 5 位身份码（占用冲突由 ensureIdentity 换码重试兜底）
   if (!id) {
-    id = await generateUniqueId();
+    id = genShortId();
     localStorage.setItem('webchat_id', id);
   }
   state.myId = id;
 
   applyTheme();
-}
-
-async function generateUniqueId() {
-  for (let i = 0; i < 20; i++) {
-    const candidate = genShortId();
-    const { data } = await state.supabase
-      .from('users')
-      .select('id')
-      .eq('id', candidate)
-      .maybeSingle();
-    if (!data) return candidate;
-  }
-  // 极端情况：20 次都撞，用 6 位
-  return String(Math.floor(100000 + Math.random() * 900000));
 }
 
 // ---------- 主题系统 ----------
@@ -147,24 +135,60 @@ function applyTheme() {
   document.documentElement.setAttribute('data-theme', theme);
 }
 
-// ---------- Supabase 初始化 ----------
-async function initSupabase() {
-  // 注册/更新用户
-  const { error } = await state.supabase
-    .from('users')
-    .upsert({
-      id: state.myId,
-      display_name: state.myName,
-      avatar_color: state.myColor,
-      last_seen: new Date().toISOString(),
-    }, { onConflict: 'id' });
+// ---------- Supabase 初始化：匿名登录 + 身份码认领 ----------
+async function ensureAuth() {
+  // 已有会话则复用（保证 auth.uid 稳定，身份码绑定不失效）
+  const { data: { session } } = await state.supabase.auth.getSession();
+  if (session) return session;
 
+  const { data, error } = await state.supabase.auth.signInAnonymously();
   if (error) {
-    console.error('User upsert error:', error);
-    toast('连接服务器失败', 'error');
+    console.error('Anonymous sign-in error:', error);
+    throw new Error('匿名登录失败，请在 Supabase 控制台开启 Anonymous 登录');
   }
+  return data.session;
+}
 
-  // 心跳
+async function ensureIdentity() {
+  const { data: { session } } = await state.supabase.auth.getSession();
+  const uid = session?.user?.id;
+  if (!uid) throw new Error('未获得登录会话');
+
+  // 解绑本浏览器历史身份残留的 auth_uid（换码后旧码归还未认领）
+  await state.supabase
+    .from('users')
+    .update({ auth_uid: null })
+    .neq('id', state.myId)
+    .eq('auth_uid', uid);
+
+  // upsert 认领身份码；码被他人占用则换一个重试
+  for (let i = 0; i < 20; i++) {
+    const { error } = await state.supabase
+      .from('users')
+      .upsert({
+        id: state.myId,
+        display_name: state.myName,
+        avatar_color: state.myColor,
+        last_seen: new Date().toISOString(),
+        auth_uid: uid,
+      }, { onConflict: 'id' });
+
+    if (!error) return;
+
+    // 42501 = RLS 拒绝（该码已被他人绑定）；23505 = 主键/唯一冲突
+    if (error.code === '42501' || error.code === '23505') {
+      state.myId = genShortId();
+      localStorage.setItem('webchat_id', state.myId);
+      renderMyInfo();
+      continue;
+    }
+    console.error('Claim identity error:', error);
+    throw new Error('认领身份码失败，请刷新重试');
+  }
+  throw new Error('无法分配身份码，请刷新重试');
+}
+
+function startHeartbeat() {
   setInterval(async () => {
     await state.supabase
       .from('users')
@@ -1458,11 +1482,14 @@ async function init() {
   renderMyInfo();
 
   try {
-    await initSupabase();
+    await ensureAuth();
+    await ensureIdentity();
+    startHeartbeat();
   } catch (e) {
+    console.error(e);
     $('conversationList').innerHTML = `<div class="empty-state">
-      <p style="color:#fa5151">⚠️ 连接失败</p>
-      <p class="hint">请检查 config.js 配置</p>
+      <p style="color:#fa5151">⚠️ ${escapeHtml(e.message) || '连接失败'}</p>
+      <p class="hint">请检查 config.js 与控制台登录配置</p>
     </div>`;
     $('loadingScreen').classList.add('hidden');
     return;
