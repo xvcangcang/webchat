@@ -316,6 +316,48 @@ async function test6_acceptRequest() {
   app.cleanup();
 }
 
+async function test7_pollContactsSync() {
+  console.log('\n[T7] pollContacts：变更检测 + 徽标/提示（无会话时也同步，H8）');
+  let phase = 'none';  // none → outgoing → accepted
+  const app = createApp({
+    hooks: (table, ops) => {
+      if (table === 'contacts' && ops.method === 'select') {
+        const myId = app.w.localStorage.getItem('webchat_id');
+        const row = {
+          id: 'out-1', user_id: myId, contact_id: '88888', remark: null,
+          owner: { display_name: '我', avatar_color: '#4A90D9' },
+          target: { display_name: '对方', avatar_color: '#5B8C5A' },
+        };
+        if (phase === 'outgoing') return { data: [{ ...row, status: 'pending' }], error: null };
+        if (phase === 'accepted') return { data: [{ ...row, status: 'accepted' }], error: null };
+        return { data: [], error: null };
+      }
+      return undefined;
+    },
+  });
+  const done = await app.waitInit();
+  assert(!!done, '初始化完成');
+  const d = app.w.document;
+
+  // H8：无任何会话（conversations 为空）时，pollMessages 的 early-return 之前仍要同步 contacts
+  phase = 'outgoing';
+  await app.w.pollMessages();
+  assert(d.getElementById('friendReqBadge').style.display === 'none', 'outgoing 不点亮徽标');
+  app.w.renderFriendRequests();
+  assert(d.getElementById('outgoingReqList').innerHTML.includes('已发送申请'), 'H8: 无会话时轮询仍刷新申请状态');
+
+  // 对方接受 → 我方收到提示
+  phase = 'accepted';
+  await app.w.pollContacts();
+  assert(d.getElementById('toastContainer').textContent.includes('通过了你的好友申请'), '申请被接受后收到提示');
+
+  // 签名未变 → 不重复提示
+  const before = d.getElementById('toastContainer').textContent;
+  await app.w.pollContacts();
+  assert(d.getElementById('toastContainer').textContent === before, '签名未变时不重复提示');
+  app.cleanup();
+}
+
 async function test4_xssAvatarColor() {
   console.log('\n[T4] 恶意 avatar_color 注入被白名单拦截');
   const evil = 'red" onmouseover="alert(1)" x="';
@@ -402,6 +444,7 @@ async function test5_notifyPreview() {
     await test4_xssAvatarColor();
     await test5_notifyPreview();
     await test6_acceptRequest();
+    await test7_pollContactsSync();
   } catch (e) {
     failed++;
     console.log('\n💥 测试套件异常:', e.stack || e);

@@ -818,7 +818,42 @@ function refreshSubscription() {
   _lastPollTime = new Date().toISOString();
 }
 
+// 好友/申请状态同步：签名变更检测（未变直接返回，防 3s 闪烁）
+async function pollContacts() {
+  if (!state.supabase || !state.myId) return;
+
+  const prevSig = _contactsSig;
+  const prevIncomingIds = new Set(state.friendRequests.incoming.map(r => r.id));
+  const prevOutgoingByContact = new Map(state.friendRequests.outgoing.map(r => [r.contact_id, r.id]));
+
+  await loadContacts();
+  if (_contactsSig === prevSig) return;  // 无变化
+
+  // 弹窗开着就地刷新列表（徽标已由 loadContacts 更新）
+  const modal = $('modalFriendRequests');
+  if (modal && modal.style.display !== 'none') renderFriendRequests();
+
+  // 新收到的申请
+  const newIncoming = state.friendRequests.incoming.filter(r => !prevIncomingIds.has(r.id));
+  if (newIncoming.length > 0) toast(`收到 ${newIncoming.length} 条好友申请`);
+
+  // 我发出的申请被对方接受：行从 outgoing 消失且变成好友
+  const newlyFriends = [...prevOutgoingByContact.entries()].filter(([contactId, rowId]) =>
+    !state.friendRequests.outgoing.some(r => r.id === rowId) &&
+    state.contacts.some(c => c.contact_id === contactId));
+  if (newlyFriends.length > 0) {
+    for (const [contactId] of newlyFriends) {
+      const name = state.contacts.find(c => c.contact_id === contactId)?.display_name || contactId;
+      toast(`${name} 通过了你的好友申请`, 'success');
+    }
+    await loadConversations();
+    renderConversationList();
+  }
+}
+
 async function pollMessages() {
+  // H8：好友状态同步必须先于下面两个 early-return —— 无会话的新用户也要收到申请
+  await pollContacts();
   if (!state.supabase || state.conversations.length === 0) return;
 
   const convIds = state.conversations.map(c => c.id);
