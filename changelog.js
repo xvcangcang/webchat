@@ -1,5 +1,12 @@
 const CHANGELOG = [
   {
+    version: 'v1.9.1',
+    date: '2026-09-26',
+    changes: [
+      '临时维护提示：打开时显示「系统维护中」通知（修复完成后移除）',
+    ]
+  },
+  {
     version: 'v1.9.0',
     date: '2026-09-25',
     changes: [
@@ -95,5 +102,5 @@ const CHANGELOG = [
       'Supabase 实时消息订阅',
       '部署支持 GitHub Pages / PocketBase',
     ]
-  }
+  },
 ];

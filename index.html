@@ -141,6 +141,21 @@
     </main>
   </div>
 
+  <!-- ======== 模态框：临时维护通知（由 version.js 的 MAINTENANCE_NOTICE 控制，修复后移除） ======== -->
+  <div class="modal-overlay" id="modalMaintenance" style="display:none">
+    <div class="modal">
+      <div class="modal-header">
+        <h3>系统维护中</h3>
+      </div>
+      <div class="modal-body">
+        <p class="maintenance-text">安全维护过程中发生意外，数据暂时无法正常加载。技术团队正在紧急修复中，修复完成后将第一时间恢复正常。由此给您带来的不便，敬请谅解。</p>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-primary" id="btnMaintenanceClose">我知道了</button>
+      </div>
+    </div>
+  </div>
+
   <!-- ======== 模态框：添加好友 ======== -->
   <div class="modal-overlay" id="modalAddContact" style="display:none">
     <div class="modal">

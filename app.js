@@ -1839,4 +1839,11 @@ async function init() {
   notify.requestPermission();
 }
 
+// 临时维护通知：在 init() 之前打开，即使初始化卡住/失败也会显示。
+// 关闭按钮自带监听，不依赖 bindEvents——后者只在初始化成功后才绑定全局关闭器。
+if (typeof MAINTENANCE_NOTICE !== 'undefined' && MAINTENANCE_NOTICE) {
+  openModal('modalMaintenance');
+  $('btnMaintenanceClose').addEventListener('click', () => closeModal('modalMaintenance'));
+}
+
 init();

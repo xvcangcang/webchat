@@ -516,6 +516,22 @@ async function test8_recoverIdentity() {
   app3.cleanup();
 }
 
+async function test9_maintenanceNotice() {
+  console.log('\n[T9] 维护通知弹窗：打开网站即显示，可点击关闭');
+  const app = createApp();
+  const doc = app.w.document;
+  const modal = doc.getElementById('modalMaintenance');
+  assert(!!modal, '维护通知弹窗存在于页面');
+  assert(modal.style.display === 'flex', '初始化时弹窗已显示（先于 init 打开）');
+  const btn = doc.getElementById('btnMaintenanceClose');
+  assert(!!btn, '关闭按钮存在');
+  btn.click();
+  assert(modal.style.display === 'none', '点击「我知道了」后弹窗关闭');
+  await app.waitInit();
+  assert(modal.style.display === 'none', '初始化完成后弹窗不会重新弹出');
+  app.cleanup();
+}
+
 (async () => {
   try {
     await test0_initFailurePath();
@@ -527,6 +543,7 @@ async function test8_recoverIdentity() {
     await test6_acceptRequest();
     await test7_pollContactsSync();
     await test8_recoverIdentity();
+    await test9_maintenanceNotice();
   } catch (e) {
     failed++;
     console.log('\n💥 测试套件异常:', e.stack || e);

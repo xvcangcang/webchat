@@ -570,6 +570,16 @@ body {
 .send-btn:active { transform: scale(0.92); }
 
 /* ======== Modals ======== */
+/* 临时维护通知：需盖过加载屏（z-index 9999），加载卡死时也必须可见 */
+#modalMaintenance { z-index: 10000; }
+
+.maintenance-text {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.8;
+  color: var(--text-secondary);
+}
+
 .modal-overlay {
   position: fixed;
   inset: 0;
