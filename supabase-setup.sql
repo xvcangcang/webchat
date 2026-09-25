@@ -56,6 +56,23 @@ CREATE TABLE IF NOT EXISTS messages (
 ALTER TABLE users ADD COLUMN IF NOT EXISTS auth_uid UUID;
 CREATE UNIQUE INDEX IF NOT EXISTS users_auth_uid_key ON users(auth_uid);
 
+-- === 迁移：找回身份（2026-09-25 密钥轮换前的失效会话解绑） ===
+-- 轮换后旧会话全部失效：老用户本机仍存原身份码，但该行还绑在已失效的 auth 用户上，
+-- 认领被 RLS 拒绝（42501）后被前端自动换码，导致"聊天记录和好友不见了"。
+-- 解绑这些行后：
+--   1) 本机还留着原身份码的老用户，刷新页面即自动认领回原身份（无需任何操作）；
+--   2) 已被自动换码的用户，在 设置 → 个人信息 → 找回身份 输入原身份码即可找回。
+-- 判定：auth 用户不存在（悬空绑定），或最后登录早于轮换截止时间 → 视为死会话。
+-- 幂等：解绑过的行 auth_uid 为 NULL 不再匹配；轮换后新建的会话晚于截止时间，不受影响。
+UPDATE users u
+SET auth_uid = NULL
+WHERE u.auth_uid IS NOT NULL
+  AND NOT EXISTS (
+    SELECT 1 FROM auth.users a
+    WHERE a.id = u.auth_uid
+      AND a.last_sign_in_at >= '2026-09-25 12:30:00+00'
+  );
+
 -- === 迁移：好友申请模型（单行 + 状态） ===
 -- 已有行一律 grandfather 为 accepted：老的好友关系不丢失
 -- （老模型的单向半确认行也成为双向好友；老代码已自动建 DM 且双方都是成员，会话本就互相可见）
