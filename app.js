@@ -217,7 +217,8 @@ async function recoverIdentity(oldCode) {
     .eq('auth_uid', uid);
   if (unbindErr) {
     console.error('找回身份：解绑当前身份失败', unbindErr);
-    return { error: `解绑当前身份失败（${unbindErr.code || unbindErr.message || '未知错误'}），请刷新后重试` };
+    const detail = String(unbindErr.message || '').slice(0, 160);
+    return { error: `解绑当前身份失败（${unbindErr.code || '未知错误'}）：${detail || '无详细信息，请刷新后重试'}` };
   }
 
   // 2) 认领原身份：行存在且未被占用（批量解绑 SQL 已执行）才匹配到；
