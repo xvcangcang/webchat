@@ -435,6 +435,87 @@ async function test5_notifyPreview() {
   app.cleanup();
 }
 
+async function test8_recoverIdentity() {
+  console.log('\n[T8] recoverIdentity：找回原身份（解绑当前 → 认领原码 → 切换刷新）');
+
+  // 8a: 格式/同码校验在本地拦截，不触碰数据库
+  const app = createApp();
+  await app.waitInit();
+  const userUpdates = () => app.client()._calls.filter(c => c.table === 'users' && c.method === 'update').length;
+  const n0 = userUpdates();
+  let res = await app.w.recoverIdentity('abc');
+  assert(res && res.error === '身份码格式不正确', '非数字身份码被本地拦截');
+  const curId = app.w.localStorage.getItem('webchat_id');
+  res = await app.w.recoverIdentity(curId);
+  assert(res && res.error === '当前身份码就是它，无需找回', '输入当前码提示无需找回');
+  assert(userUpdates() === n0, '校验失败时未执行任何数据库更新');
+  app.cleanup();
+
+  // 8b: 成功路径 — 解绑当前身份 → 认领原码（未被占用）→ 恢复原资料并切换
+  const updates = [];
+  const app2 = createApp({
+    hooks: (table, ops) => {
+      if (table === 'users' && ops.method === 'update') {
+        updates.push({ payload: ops.payload, filters: ops.filters });
+        if (ops.filters.some(f => f[0] === 'eq' && f[1] === 'id' && f[2] === '88888')) {
+          return { data: [{ id: '88888', display_name: '老昵称', avatar_color: '#5B8C5A' }], error: null };
+        }
+        return { data: [], error: null };
+      }
+      return undefined;
+    },
+  });
+  await app2.waitInit();
+  const beforeId = app2.w.localStorage.getItem('webchat_id');
+  assert(beforeId !== '88888', '初始化身份不是原码（模拟已被换码）');
+  const m0 = updates.length;
+  res = await app2.w.recoverIdentity('88888');
+  assert(res && res.success === true, '找回成功');
+  const rec = updates.slice(m0);
+  assert(rec.length === 2, `两次更新：解绑当前 + 认领原码（实际 ${rec.length} 次）`);
+  assert(rec[0] && rec[0].payload.auth_uid === null &&
+    rec[0].filters.some(f => f[1] === 'id' && f[2] === beforeId) &&
+    rec[0].filters.some(f => f[1] === 'auth_uid' && f[2] === FAKE_UID),
+    '第一步：解绑当前身份（auth_uid 置空，限自己绑定的行）');
+  assert(rec[1] && rec[1].payload.auth_uid === FAKE_UID &&
+    rec[1].filters.some(f => f[1] === 'id' && f[2] === '88888') &&
+    rec[1].filters.some(f => f[1] === 'auth_uid' && f[2] === null),
+    '第二步：认领原码（要求该行未被占用）');
+  assert(rec[1].payload.display_name === undefined, '认领不覆写原身份的昵称列');
+  assert(app2.w.localStorage.getItem('webchat_id') === '88888', 'localStorage 身份码切换为原码');
+  assert(app2.w.localStorage.getItem('webchat_name') === '老昵称', '恢复原身份昵称');
+  assert(app2.w.localStorage.getItem('webchat_color') === '#5B8C5A', '恢复原头像颜色');
+  app2.cleanup();
+
+  // 8c: 失败路径 — 原码不可用（未解绑/不存在）→ 回滚当前身份，localStorage 不变
+  const updates3 = [];
+  const app3 = createApp({
+    hooks: (table, ops) => {
+      if (table === 'users' && ops.method === 'update') {
+        updates3.push({ payload: ops.payload, filters: ops.filters });
+        if (ops.filters.some(f => f[0] === 'eq' && f[1] === 'id' && f[2] === '88888')) {
+          return { data: [], error: null }; // 认领匹配 0 行：原码仍被占用或不存在
+        }
+        return { data: [], error: null };
+      }
+      return undefined;
+    },
+  });
+  await app3.waitInit();
+  const id3 = app3.w.localStorage.getItem('webchat_id');
+  const m3 = updates3.length;
+  res = await app3.w.recoverIdentity('88888');
+  assert(res && res.error === '该身份码不存在或仍被占用，请确认后重试', '认领失败返回明确错误');
+  assert(app3.w.localStorage.getItem('webchat_id') === id3, '失败时身份码保持不变（不触发换码）');
+  const rec3 = updates3.slice(m3);
+  assert(rec3.length === 3, `三次更新：解绑 + 尝试认领 + 回滚（实际 ${rec3.length} 次）`);
+  assert(rec3[2] && rec3[2].payload.auth_uid === FAKE_UID &&
+    rec3[2].filters.some(f => f[1] === 'id' && f[2] === id3) &&
+    rec3[2].filters.some(f => f[1] === 'auth_uid' && f[2] === null),
+    '回滚：重新绑定当前身份');
+  app3.cleanup();
+}
+
 (async () => {
   try {
     await test0_initFailurePath();
@@ -445,6 +526,7 @@ async function test5_notifyPreview() {
     await test5_notifyPreview();
     await test6_acceptRequest();
     await test7_pollContactsSync();
+    await test8_recoverIdentity();
   } catch (e) {
     failed++;
     console.log('\n💥 测试套件异常:', e.stack || e);

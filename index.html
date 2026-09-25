@@ -272,6 +272,14 @@
               </button>
             </div>
 
+            <label style="margin-top:16px">找回身份</label>
+            <p class="settings-hint">换了浏览器或清除过网站数据，导致身份码变了、好友和聊天记录不见了？输入原身份码即可找回。</p>
+            <div class="recover-row">
+              <input type="text" id="inputRecoverId" placeholder="原身份码（5-6 位数字）" maxlength="6" autocomplete="off">
+              <button class="btn btn-primary" id="btnRecoverId">找回</button>
+            </div>
+            <div class="modal-feedback" id="recoverFeedback"></div>
+
             <div class="settings-actions">
               <button class="btn btn-primary" id="btnSaveProfile">保存个人信息</button>
             </div>

@@ -197,6 +197,60 @@ async function ensureIdentity() {
   throw new Error('无法分配身份码，请刷新重试');
 }
 
+// 找回身份：输入原身份码 → 解绑当前身份 → 认领原身份 → 刷新页面
+// 场景：换浏览器/清数据/密钥轮换导致被自动换码，原身份的好友与聊天记录还在原码下
+async function recoverIdentity(oldCode) {
+  oldCode = (oldCode || '').trim();
+  if (!/^\d{5,6}$/.test(oldCode)) return { error: '身份码格式不正确' };
+  if (oldCode === state.myId) return { error: '当前身份码就是它，无需找回' };
+  if (!state.supabase) return { error: '未连接服务器，请刷新重试' };
+
+  const { data: { session } } = await state.supabase.auth.getSession();
+  const uid = session?.user?.id;
+  if (!uid) return { error: '未获得登录会话，请刷新重试' };
+
+  // 1) 解绑当前身份（auth_uid 唯一，先腾出绑定才能认领原身份）
+  const { error: unbindErr } = await state.supabase
+    .from('users')
+    .update({ auth_uid: null })
+    .eq('id', state.myId)
+    .eq('auth_uid', uid);
+  if (unbindErr) return { error: '解绑当前身份失败，请刷新后重试' };
+
+  // 2) 认领原身份：行存在且未被占用（批量解绑 SQL 已执行）才匹配到；
+  //    只改 auth_uid/last_seen，昵称与头像色从返回值读回以恢复原资料
+  const { data, error } = await state.supabase
+    .from('users')
+    .update({ auth_uid: uid, last_seen: new Date().toISOString() })
+    .eq('id', oldCode)
+    .eq('auth_uid', null)
+    .select('id, display_name, avatar_color');
+
+  if (error || !data || data.length === 0) {
+    // 原身份码不可用 → 回滚当前身份的绑定（若回滚也失败，刷新时 ensureIdentity 会重新认领）
+    await state.supabase
+      .from('users')
+      .update({ auth_uid: uid })
+      .eq('id', state.myId)
+      .eq('auth_uid', null);
+    return { error: '该身份码不存在或仍被占用，请确认后重试' };
+  }
+
+  // 3) 恢复原身份资料，切换身份码后刷新页面，以原身份重新加载好友与会话
+  const row = data[0];
+  if (row.display_name) {
+    localStorage.setItem('webchat_name', row.display_name);
+    state.myName = row.display_name;
+  }
+  if (row.avatar_color && /^#[0-9A-Fa-f]{6}$/.test(row.avatar_color)) {
+    localStorage.setItem('webchat_color', row.avatar_color);
+    state.myColor = row.avatar_color;
+  }
+  localStorage.setItem('webchat_id', oldCode);
+  location.reload();
+  return { success: true };
+}
+
 function startHeartbeat() {
   setInterval(async () => {
     await state.supabase
@@ -1277,6 +1331,11 @@ function bindEvents() {
     $('inputMyName').value = state.myName;
     $('settingsId').textContent = state.myId;
 
+    // 找回身份区：每次打开清空上次输入与提示
+    $('inputRecoverId').value = '';
+    $('recoverFeedback').textContent = '';
+    $('recoverFeedback').className = 'modal-feedback';
+
     // 同步头像颜色选中态
     document.querySelectorAll('#avatarColorPicker .color-swatch').forEach(s => {
       s.classList.toggle('active', s.dataset.color === state.myColor);
@@ -1413,6 +1472,27 @@ function bindEvents() {
     renderConversationList();
     closeModal('modalSettings');
     toast('设置已保存', 'success');
+  });
+
+  // 找回身份：输入原身份码恢复原好友与聊天记录（成功后 recoverIdentity 内部刷新页面）
+  $('btnRecoverId').addEventListener('click', async () => {
+    const fb = $('recoverFeedback');
+    fb.textContent = '';
+    fb.className = 'modal-feedback';
+    const code = $('inputRecoverId').value.trim();
+    if (!code) { fb.textContent = '请输入原身份码'; fb.className = 'modal-feedback error'; return; }
+
+    const res = await recoverIdentity(code);
+    if (res && res.error) {
+      fb.textContent = res.error;
+      fb.className = 'modal-feedback error';
+    } else if (res && res.success) {
+      fb.textContent = '找回成功，正在以原身份刷新…';
+      fb.className = 'modal-feedback success';
+    }
+  });
+  $('inputRecoverId').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') $('btnRecoverId').click();
   });
 
   $('btnCopyId').addEventListener('click', () => {
