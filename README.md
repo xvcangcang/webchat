@@ -25,10 +25,11 @@
 
 1. 注册 [Supabase](https://supabase.com)（免费）
 2. 创建新项目，记住数据库密码
-3. 进入 **SQL Editor**，粘贴 `supabase-setup.sql` 的内容并执行
-4. 进入 **Settings → API**，复制：
+3. 进入 **Authentication → Sign In / Providers → Anonymous**，启用匿名登录（必须，否则无法登录）
+4. 进入 **SQL Editor**，粘贴 `supabase-setup.sql` 的内容并执行（幂等，老库重复执行即完成迁移）
+5. 进入 **Settings → API**，复制：
    - `Project URL` (格式: `https://xxxxx.supabase.co`)
-   - `anon public` key
+   - `anon public` key（或新版 `publishable` key）
 
 ### 第 2 步：配置前端
 
@@ -76,15 +77,22 @@ webchat/
 └── README.md               # 本文件
 ```
 
-## 🔒 安全说明
+## 🔒 安全说明（v2 安全加固版）
 
-当前版本使用 Supabase 的 `anon` key 进行操作，RLS 策略设置为全开放。
-这意味着任何知道 Supabase URL 的人都可以读写数据。
+安全模型：
 
-如果需要更高安全性，可以：
-1. 启用 Supabase Auth
-2. 修改 RLS 策略，限制只有会话成员才能读取消息
-3. 添加消息加密（E2EE）
+1. **匿名登录** — 每个浏览器通过 Supabase Auth 匿名登录获得 `auth.uid`，身份码（5 位数字）与 `auth.uid` 绑定，不能冒充他人
+2. **RLS 按会话隔离** — 消息/会话只能被成员读取；只能以自己的身份发言；踢人/设管理员/解散等操作在数据库层校验角色，前端绕过无效
+3. **防枚举** — 用户表只能看到 自己 / 好友 / 同会话成员，无法一次性拉取全站用户
+4. **XSS 防护** — 头像颜色白名单（`#RRGGBB`）、消息内容输出转义、CDN 锁版本 + SRI
+5. **凭据不入库** — `config.js` 已加入 `.gitignore`，从 `config.example.js` 复制填写
+
+已知边界（如需进一步加固）：
+
+- 匿名登录意味着任何人都可以注册（但数据互相隔离）
+- 好友关系为"单向添加、双向确认"，对方加回后才互相可见
+- 无端到端加密，消息在服务端明文存储（Supabase 静态加密之外）
+- 升级提示：如果仓库曾公开提交过 `config.js`，旧 key 已泄露——请到控制台**轮换 key**，并确认升级前已执行新的 `supabase-setup.sql`（否则旧 key 配合旧的全开放策略仍可读写全库）
 
 ## 📝 使用说明
 
