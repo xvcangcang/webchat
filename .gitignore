@@ -1,5 +1,6 @@
-# 真实凭据不入库（从 config.example.js 复制后填写）
-config.js
+# config.js 已入库：sb_publishable key 按 Supabase 设计本就随前端公开，
+# 数据安全由 RLS 保障（key 泄露可随时在控制台轮换）
+# 注意：若曾用私有 key，先轮换再入库
 
 # 测试依赖
 node_modules/
