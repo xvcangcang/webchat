@@ -56,6 +56,28 @@ CREATE TABLE IF NOT EXISTS messages (
 ALTER TABLE users ADD COLUMN IF NOT EXISTS auth_uid UUID;
 CREATE UNIQUE INDEX IF NOT EXISTS users_auth_uid_key ON users(auth_uid);
 
+-- === 迁移：好友申请模型（单行 + 状态） ===
+-- 已有行一律 grandfather 为 accepted：老的好友关系不丢失
+-- （老模型的单向半确认行也成为双向好友；老代码已自动建 DM 且双方都是成员，会话本就互相可见）
+ALTER TABLE contacts ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'accepted';
+
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'contacts_status_check') THEN
+    ALTER TABLE contacts ADD CONSTRAINT contacts_status_check
+      CHECK (status IN ('pending','accepted'));
+  END IF;
+END $$;
+
+-- 单行模型：同一对身份（无序）最多一行
+-- 1) 清理老模型遗留的反向重复行（保留 id 较小者；remark 从未被写入，无数据损失）
+-- 2) 唯一索引同时消灭"双方同时申请"竞态：反向插入直接 23505
+DELETE FROM contacts a USING contacts b
+WHERE a.id > b.id AND a.user_id = b.contact_id AND a.contact_id = b.user_id;
+
+CREATE UNIQUE INDEX IF NOT EXISTS contacts_pair_uniq
+  ON contacts (LEAST(user_id, contact_id), GREATEST(user_id, contact_id));
+
 -- === 2. 索引 ===
 CREATE INDEX IF NOT EXISTS idx_contacts_user ON contacts(user_id);
 CREATE INDEX IF NOT EXISTS idx_contacts_contact ON contacts(contact_id);
@@ -141,6 +163,10 @@ CREATE POLICY "users_select" ON users FOR SELECT TO authenticated
     OR EXISTS (
       SELECT 1 FROM contacts c WHERE c.user_id = me() AND c.contact_id = users.id
     )
+    -- 反向：向我发出申请/我接受的好友（单行模型中行方向在发起方）
+    OR EXISTS (
+      SELECT 1 FROM contacts c WHERE c.contact_id = me() AND c.user_id = users.id
+    )
     OR EXISTS (
       SELECT 1 FROM conversation_members cm1
       JOIN conversation_members cm2 ON cm1.conversation_id = cm2.conversation_id
@@ -158,15 +184,24 @@ CREATE POLICY "users_update" ON users FOR UPDATE TO authenticated
   WITH CHECK (auth_uid IS NULL OR auth_uid = auth.uid());
 -- 注意：无 DELETE 策略，用户行不可删除
 
--- 好友：看与自己相关的行；只能写入 user_id = 自己 的行（单向添加，需双向确认）
+-- 好友：看与自己相关的行（含待处理申请）
+-- INSERT 只能"以自己名义发起 pending 申请"——伪造 accepted 被 status 检查拦死，
+-- 反向重复申请被 contacts_pair_uniq 拦死（23505）
+-- UPDATE 仅限接收方把申请置为 accepted（接受）；发送方取消、接收方拒绝都走 DELETE
 CREATE POLICY "contacts_select" ON contacts FOR SELECT TO authenticated
   USING (user_id = me() OR contact_id = me());
 CREATE POLICY "contacts_insert" ON contacts FOR INSERT TO authenticated
-  WITH CHECK (user_id = me() AND contact_id <> me());
+  WITH CHECK (user_id = me() AND contact_id <> me() AND status = 'pending');
 CREATE POLICY "contacts_update" ON contacts FOR UPDATE TO authenticated
-  USING (user_id = me()) WITH CHECK (user_id = me());
+  USING (contact_id = me())
+  WITH CHECK (contact_id = me() AND user_id <> me() AND status = 'accepted');
 CREATE POLICY "contacts_delete" ON contacts FOR DELETE TO authenticated
   USING (user_id = me() OR contact_id = me());
+
+-- 身份列不可改写：WITH CHECK 只能看到新行、无法对比旧值，只能在权限层封死
+-- （否则接收方可把行的 user_id/contact_id 改成任意身份码伪造好友关系）
+REVOKE UPDATE ON contacts FROM authenticated;
+GRANT UPDATE (status) ON contacts TO authenticated;
 
 -- 会话：成员或创建者可见/可建；群管操作仅群主；私聊成员可删除
 CREATE POLICY "conversations_select" ON conversations FOR SELECT TO authenticated
@@ -181,7 +216,7 @@ CREATE POLICY "conversations_delete" ON conversations FOR DELETE TO authenticate
 -- 会话成员：
 --  SELECT 仅限自己参与的会话
 --  INSERT 自己：必须已在会话中，或自己是会话创建者（创建首个成员）
---           他人：必须已在会话中，且被邀请人是自己的好友
+--           他人：必须已在会话中，且与被邀请人已是好友（任一方向 status='accepted'）
 --  UPDATE 仅群主（设/撤管理员、转让群主）
 --  DELETE 自己（退群）/ 群主（踢人）/ 管理员（踢普通成员）
 --         / 私聊会话中删除对方行（删除好友时的清理）
@@ -197,7 +232,10 @@ CREATE POLICY "members_insert" ON conversation_members FOR INSERT TO authenticat
       user_id <> me()
       AND is_member(conversation_id)
       AND EXISTS (
-        SELECT 1 FROM contacts c WHERE c.user_id = me() AND c.contact_id = conversation_members.user_id
+        SELECT 1 FROM contacts c
+        WHERE c.status = 'accepted'
+          AND ((c.user_id = me()    AND c.contact_id = conversation_members.user_id)
+            OR (c.contact_id = me() AND c.user_id    = conversation_members.user_id))
       )
     )
   );
