@@ -305,34 +305,31 @@ async function loadMessages(convId) {
 // ---------- 好友操作 ----------
 async function addContact(contactId) {
   if (contactId === state.myId) return { error: '不能添加自己' };
-
-  const { data: user, error: e1 } = await state.supabase
-    .from('users')
-    .select('id, display_name')
-    .eq('id', contactId)
-    .single();
-
-  if (e1 || !user) return { error: '用户不存在，请检查身份码' };
+  if (!/^\d{5,6}$/.test(contactId)) return { error: '身份码格式不正确' };
 
   const exists = state.contacts.find(c => c.contact_id === contactId);
   if (exists) return { error: '该用户已经是好友了' };
 
-  // 双向添加好友
-  const { error: e2 } = await state.supabase
+  // 单向插入自己这行（RLS 限制 user_id = 自己）；对方加回后即双向可见
+  const { error } = await state.supabase
     .from('contacts')
-    .insert([
-      { user_id: state.myId, contact_id: contactId },
-      { user_id: contactId, contact_id: state.myId },
-    ]);
+    .insert({ user_id: state.myId, contact_id: contactId });
 
-  if (e2) { console.error('Add contact error:', e2); return { error: '添加失败，请重试' }; }
+  if (error) {
+    // 23503 = 外键不存在 → 目标用户尚未注册；23505 = 已是好友
+    if (error.code === '23503') return { error: '用户不存在，请检查身份码' };
+    if (error.code === '23505') return { error: '该用户已经是好友了' };
+    console.error('Add contact error:', error);
+    return { error: '添加失败，请重试' };
+  }
 
   await loadContacts();
 
   // #2 fix: 添加好友后自动创建私聊会话
   await getOrCreateDirectConversation(contactId);
 
-  return { success: true, name: user.display_name };
+  const added = state.contacts.find(c => c.contact_id === contactId);
+  return { success: true, name: added?.display_name || contactId };
 }
 
 // ---------- 会话操作 ----------
@@ -351,14 +348,18 @@ async function getOrCreateDirectConversation(contactId) {
 
   if (e1) { console.error('Create conv error:', e1); return null; }
 
+  // 先插入自己（RLS 要求创建者先成为成员），再插入对方
   const { error: e2 } = await state.supabase
     .from('conversation_members')
-    .insert([
-      { conversation_id: conv.id, user_id: state.myId, role: 'owner' },
-      { conversation_id: conv.id, user_id: contactId, role: 'member' },
-    ]);
+    .insert({ conversation_id: conv.id, user_id: state.myId, role: 'owner' });
 
-  if (e2) { console.error('Add members error:', e2); return null; }
+  if (e2) { console.error('Add member error:', e2); return null; }
+
+  const { error: e3 } = await state.supabase
+    .from('conversation_members')
+    .insert({ conversation_id: conv.id, user_id: contactId, role: 'member' });
+
+  if (e3) { console.error('Add other member error:', e3); return null; }
 
   await loadConversations();
   refreshSubscription();
@@ -375,15 +376,20 @@ async function createGroupConversation(name, memberIds) {
 
   if (e1) { console.error('Create group error:', e1); return null; }
 
-  const allMembers = [state.myId, ...memberIds];
-  const members = allMembers.map(uid => ({
+  // 先插入自己（创建者必须先成为成员），再批量插入受邀好友
+  const { error: e2 } = await state.supabase
+    .from('conversation_members')
+    .insert({ conversation_id: conv.id, user_id: state.myId, role: 'owner' });
+  if (e2) { console.error('Add owner error:', e2); return null; }
+
+  const members = memberIds.map(uid => ({
     conversation_id: conv.id,
     user_id: uid,
-    role: uid === state.myId ? 'owner' : 'member',
+    role: 'member',
   }));
 
-  const { error: e2 } = await state.supabase.from('conversation_members').insert(members);
-  if (e2) { console.error('Add group members error:', e2); return null; }
+  const { error: e3 } = await state.supabase.from('conversation_members').insert(members);
+  if (e3) { console.error('Add group members error:', e3); return null; }
 
   await state.supabase.from('messages').insert({
     conversation_id: conv.id, sender_id: state.myId,
@@ -480,9 +486,11 @@ async function leaveGroup(convId) {
 }
 
 async function dissolveGroup(convId) {
-  // 删除所有消息、成员、会话
+  // 按顺序删除：消息 → 其他成员行 → 会话
+  // 保留自己的成员行直到最后一步，确保全程满足 RLS 权限校验
   await state.supabase.from('messages').delete().eq('conversation_id', convId);
-  await state.supabase.from('conversation_members').delete().eq('conversation_id', convId);
+  await state.supabase.from('conversation_members').delete()
+    .eq('conversation_id', convId).neq('user_id', state.myId);
   await state.supabase.from('conversations').delete().eq('id', convId);
 
   delete state.messages[convId];
@@ -572,13 +580,17 @@ async function deleteFriend() {
   const other = conv.members.find(m => m.user_id !== state.myId);
   if (!other) return;
 
-  // 1. 删除好友关系（双向）
+  // 1. 删除好友关系（双向，参数化查询替代字符串拼接）
   await state.supabase.from('contacts').delete()
-    .or(`and(user_id.eq.${state.myId},contact_id.eq.${other.user_id}),and(user_id.eq.${other.user_id},contact_id.eq.${state.myId})`);
+    .eq('user_id', state.myId).eq('contact_id', other.user_id);
+  await state.supabase.from('contacts').delete()
+    .eq('user_id', other.user_id).eq('contact_id', state.myId);
 
-  // 2. 删除会话及消息
+  // 2. 按顺序删除：消息 → 对方成员行 → 会话（自己最后随级联清理）
+  // 必须保持自己是成员直到会话删除，否则 RLS 会拒绝删除会话
   await state.supabase.from('messages').delete().eq('conversation_id', conv.id);
-  await state.supabase.from('conversation_members').delete().eq('conversation_id', conv.id);
+  await state.supabase.from('conversation_members').delete()
+    .eq('conversation_id', conv.id).neq('user_id', state.myId);
   await state.supabase.from('conversations').delete().eq('id', conv.id);
 
   // 3. 更新本地状态
@@ -599,13 +611,16 @@ async function blockUser() {
   const other = conv.members.find(m => m.user_id !== state.myId);
   if (!other) return;
 
-  // 1. 先删除好友关系
+  // 1. 先删除好友关系（双向，参数化查询）
   await state.supabase.from('contacts').delete()
-    .or(`and(user_id.eq.${state.myId},contact_id.eq.${other.user_id}),and(user_id.eq.${other.user_id},contact_id.eq.${state.myId})`);
+    .eq('user_id', state.myId).eq('contact_id', other.user_id);
+  await state.supabase.from('contacts').delete()
+    .eq('user_id', other.user_id).eq('contact_id', state.myId);
 
-  // 2. 删除会话及消息
+  // 2. 按顺序删除：消息 → 对方成员行 → 会话（保持自己是成员直到会话删除）
   await state.supabase.from('messages').delete().eq('conversation_id', conv.id);
-  await state.supabase.from('conversation_members').delete().eq('conversation_id', conv.id);
+  await state.supabase.from('conversation_members').delete()
+    .eq('conversation_id', conv.id).neq('user_id', state.myId);
   await state.supabase.from('conversations').delete().eq('id', conv.id);
 
   // 3. 记录拉黑（存 localStorage，因为没有 blocks 表）

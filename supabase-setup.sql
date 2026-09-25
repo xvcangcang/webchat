@@ -181,9 +181,10 @@ CREATE POLICY "conversations_delete" ON conversations FOR DELETE TO authenticate
 -- 会话成员：
 --  SELECT 仅限自己参与的会话
 --  INSERT 自己：必须已在会话中，或自己是会话创建者（创建首个成员）
---           他人：必须已在会话中（仅邀请方可加人）
+--           他人：必须已在会话中，且被邀请人是自己的好友
 --  UPDATE 仅群主（设/撤管理员、转让群主）
 --  DELETE 自己（退群）/ 群主（踢人）/ 管理员（踢普通成员）
+--         / 私聊会话中删除对方行（删除好友时的清理）
 CREATE POLICY "members_select" ON conversation_members FOR SELECT TO authenticated
   USING (is_member(conversation_id));
 CREATE POLICY "members_insert" ON conversation_members FOR INSERT TO authenticated
@@ -192,7 +193,13 @@ CREATE POLICY "members_insert" ON conversation_members FOR INSERT TO authenticat
       is_member(conversation_id)
       OR EXISTS (SELECT 1 FROM conversations c WHERE c.id = conversation_id AND c.created_by = me())
     ))
-    OR (user_id <> me() AND is_member(conversation_id))
+    OR (
+      user_id <> me()
+      AND is_member(conversation_id)
+      AND EXISTS (
+        SELECT 1 FROM contacts c WHERE c.user_id = me() AND c.contact_id = conversation_members.user_id
+      )
+    )
   );
 CREATE POLICY "members_update" ON conversation_members FOR UPDATE TO authenticated
   USING (my_role(conversation_id) = 'owner')
@@ -202,6 +209,14 @@ CREATE POLICY "members_delete" ON conversation_members FOR DELETE TO authenticat
     user_id = me()
     OR my_role(conversation_id) = 'owner'
     OR (my_role(conversation_id) = 'admin' AND role = 'member')
+    OR (
+      user_id <> me()
+      AND is_member(conversation_id)
+      AND EXISTS (
+        SELECT 1 FROM conversations c
+        WHERE c.id = conversation_members.conversation_id AND c.type = 'direct'
+      )
+    )
   );
 
 -- 消息：仅会话成员可读；只能以自己的身份发言；成员可撤回/清空
