@@ -352,29 +352,67 @@ async function addContact(contactId) {
   if (contactId === state.myId) return { error: '不能添加自己' };
   if (!/^\d{5,6}$/.test(contactId)) return { error: '身份码格式不正确' };
 
-  const exists = state.contacts.find(c => c.contact_id === contactId);
-  if (exists) return { error: '该用户已经是好友了' };
+  // 预检本地状态（DB 的 contacts_pair_uniq 是最终兜底）
+  if (state.contacts.find(c => c.contact_id === contactId)) return { error: '该用户已经是好友了' };
+  if (state.friendRequests.outgoing.find(c => c.contact_id === contactId)) return { error: '已发送过申请，等待对方验证' };
+  if (state.friendRequests.incoming.find(c => c.contact_id === contactId)) return { error: '对方也向你发出了申请，请到「新的朋友」接受' };
 
-  // 单向插入自己这行（RLS 限制 user_id = 自己）；对方加回后即双向可见
+  // 发起申请：单行模型只允许以自己名义插入 pending 行，不自动建会话
   const { error } = await state.supabase
     .from('contacts')
-    .insert({ user_id: state.myId, contact_id: contactId });
+    .insert({ user_id: state.myId, contact_id: contactId, status: 'pending' });
 
   if (error) {
-    // 23503 = 外键不存在 → 目标用户尚未注册；23505 = 已是好友
+    // 23503 = 外键不存在（目标未注册）；23505 = 重复/反向申请被 contacts_pair_uniq 拦下
     if (error.code === '23503') return { error: '用户不存在，请检查身份码' };
-    if (error.code === '23505') return { error: '该用户已经是好友了' };
+    if (error.code === '23505') return { error: '对方已发出申请或已是好友，请到「新的朋友」查看' };
+    if (error.code === '42501') return { error: '请求被拒绝，请刷新页面后重试' };
     console.error('Add contact error:', error);
     return { error: '添加失败，请重试' };
   }
 
   await loadContacts();
+  return { success: true, message: '已发送好友申请，等待对方验证' };
+}
 
-  // #2 fix: 添加好友后自动创建私聊会话
-  await getOrCreateDirectConversation(contactId);
+// ---------- 好友申请：接受 / 拒绝 / 取消 ----------
+async function acceptFriendRequest(reqId) {
+  const req = state.friendRequests.incoming.find(r => r.id === reqId);
+  if (!req) return { error: '该申请已失效' };
 
-  const added = state.contacts.find(c => c.contact_id === contactId);
-  return { success: true, name: added?.display_name || contactId };
+  // 仅接收方可置 accepted（RLS）；status 条件防"发送方已取消"竞态与双击
+  const { data, error } = await state.supabase
+    .from('contacts')
+    .update({ status: 'accepted' })
+    .eq('id', reqId)
+    .eq('contact_id', state.myId)
+    .eq('status', 'pending')
+    .select('id');
+  if (error) { console.error('Accept request error:', error); return { error: '接受失败，请重试' }; }
+  if (!data || data.length === 0) return { error: '该申请已失效' };
+
+  // 好友关系生效 → 自动创建私聊会话（members_insert 双向 + accepted 策略已放行）
+  await getOrCreateDirectConversation(req.contact_id);
+
+  await loadContacts();
+  await loadConversations();
+  renderConversationList();
+  return { success: true, name: req.display_name };
+}
+
+async function declineFriendRequest(reqId) {  // 接收方拒绝
+  return removeFriendRequest(reqId);
+}
+
+async function cancelFriendRequest(reqId) {   // 发送方取消
+  return removeFriendRequest(reqId);
+}
+
+async function removeFriendRequest(reqId) {
+  const { error } = await state.supabase.from('contacts').delete().eq('id', reqId);
+  if (error) { console.error('Remove request error:', error); return { error: '操作失败，请重试' }; }
+  await loadContacts();
+  return { success: true };
 }
 
 // ---------- 会话操作 ----------
@@ -1364,9 +1402,8 @@ function bindEvents() {
       $('addContactFeedback').textContent = result.error;
       $('addContactFeedback').className = 'modal-feedback error';
     } else {
-      $('addContactFeedback').textContent = `已添加 ${result.name}`;
+      $('addContactFeedback').textContent = result.message;
       $('addContactFeedback').className = 'modal-feedback success';
-      renderConversationList();
       setTimeout(() => closeModal('modalAddContact'), 1000);
     }
   });

@@ -186,12 +186,14 @@ async function test2_codeCollisionRetry() {
 }
 
 async function test3_addContact() {
-  console.log('\n[T3] addContact：错误码映射 + 单向插入');
-  // 3a: 23503 用户不存在 / 23505 已是好友 / 格式校验
+  console.log('\n[T3] addContact：错误码映射 + 发送申请（不建会话）');
+  // 3a: 23503 用户不存在 / 23505 重复或反向申请 / 42501 RLS 拒绝 / 格式校验
   const app = createApp({
     hooks: (table, ops) => {
       if (table === 'contacts' && ops.method === 'insert') {
-        return { error: { code: ops.payload.contact_id === '77777' ? '23505' : '23503' } };
+        const code = ops.payload.contact_id === '77777' ? '23505'
+          : ops.payload.contact_id === '66666' ? '42501' : '23503';
+        return { error: { code } };
       }
       return undefined;
     },
@@ -200,17 +202,19 @@ async function test3_addContact() {
   let res = await app.w.addContact('88888');
   assert(res && res.error === '用户不存在，请检查身份码', '23503 → "用户不存在，请检查身份码"');
   res = await app.w.addContact('77777');
-  assert(res && res.error === '该用户已经是好友了', '23505 → "该用户已经是好友了"');
+  assert(res && res.error === '对方已发出申请或已是好友，请到「新的朋友」查看', '23505 → "对方已发出申请或已是好友"');
+  res = await app.w.addContact('66666');
+  assert(res && res.error === '请求被拒绝，请刷新页面后重试', '42501 → "请求被拒绝，请刷新页面后重试"');
   res = await app.w.addContact('abc');
   assert(res && res.error === '身份码格式不正确', '非数字身份码被本地拦截');
   app.cleanup();
 
-  // 3b: 成功路径 — 单对象插入 + 创建私聊会话
-  // 状态化假数据：插入前好友列表为空（否则触发"已经是好友"前置检查），插入后可查到
+  // 3b: 成功路径 — 单对象插入 pending 申请，不自动创建会话
+  // 状态化假数据：插入前列表为空（否则触发"已经是好友"前置检查），插入后可查到
   let contactInsertPayload = null;
   let contactInsertCount = 0;
   let convInserts = 0;
-  let convPayload = null;
+  let memberInserts = 0;
   let inserted = false;
   const app2 = createApp({
     hooks: (table, ops) => {
@@ -222,28 +226,84 @@ async function test3_addContact() {
       }
       if (table === 'contacts' && ops.method === 'select') {
         if (!inserted) return { data: [], error: null };
-        // 单行模型新 shape：行方向在发起方，测试走 iAmOwner=false 的对侧资料分支
-        return { data: [{ id: 'c1', user_id: '88888', contact_id: '00000', status: 'accepted', remark: null, owner: { display_name: '测试好友', avatar_color: '#4A90D9' }, target: null }], error: null };
+        // 申请发出后：自己为行主、status=pending → 应落入 friendRequests.outgoing
+        return { data: [{ id: 'c1', user_id: contactInsertPayload.user_id, contact_id: contactInsertPayload.contact_id, status: 'pending', remark: null, owner: null, target: { display_name: '对方', avatar_color: '#4A90D9' } }], error: null };
       }
-      if (table === 'conversations' && ops.method === 'insert') {
-        convInserts++;
-        convPayload = ops.payload;
-        return { data: { id: 'conv-test-1', type: 'direct', name: null, avatar_color: '#5B8C5A', created_by: ops.payload.created_by }, error: null };
-      }
-      if (table === 'conversation_members' && ops.method === 'insert') return { error: null };
+      if (table === 'conversations' && ops.method === 'insert') { convInserts++; return undefined; }
+      if (table === 'conversation_members' && ops.method === 'insert') { memberInserts++; return { error: null }; }
       return undefined;
     },
   });
   await app2.waitInit();
   res = await app2.w.addContact('88888');
-  assert(res && res.success === true, '添加好友成功');
-  assert(res && res.name === '测试好友', `返回好友昵称（实际: ${res && res.name}）`);
+  assert(res && res.success === true, '发送申请成功');
+  assert(res && res.message === '已发送好友申请，等待对方验证', `返回提示（实际: ${res && res.message}）`);
   assert(contactInsertCount === 1, 'contacts 只执行一次插入');
   assert(contactInsertPayload && !Array.isArray(contactInsertPayload), 'contacts 为单对象插入（非双向数组）');
   assert(contactInsertPayload && contactInsertPayload.user_id === app2.w.localStorage.getItem('webchat_id'), '只插入自己这行（user_id = 自己）');
-  assert(convInserts === 1, '自动创建私聊会话');
-  assert(convPayload && convPayload.created_by === app2.w.localStorage.getItem('webchat_id'), '会话 created_by = 自己');
+  assert(contactInsertPayload && contactInsertPayload.status === 'pending', '插入行 status = pending');
+  assert(convInserts === 0, '不自动创建会话');
+  assert(memberInserts === 0, '不自动写入会话成员');
+  // 行为验证 outgoing 拆分：再次发送同一码应被本地预检拦截，不再落库
+  res = await app2.w.addContact('88888');
+  assert(res && res.error === '已发送过申请，等待对方验证', '重复发送被 outgoing 预检拦截');
+  assert(contactInsertCount === 1, '预检拦截后仍只有 1 次插入');
   app2.cleanup();
+}
+
+async function test6_acceptRequest() {
+  console.log('\n[T6] 接受好友申请：置 accepted + 自动建会话');
+  let updatePayload = null;
+  let updateFilters = null;
+  let convInserts = 0;
+  let memberInserts = 0;
+  const memberPayloads = [];
+  const app = createApp({
+    hooks: (table, ops) => {
+      if (table === 'contacts' && ops.method === 'select') {
+        // init 时即存在一条发给我的 pending 申请
+        return {
+          data: [{
+            id: 'req-1', user_id: '88888', contact_id: '00000', status: 'pending', remark: null,
+            owner: { display_name: '申请人', avatar_color: '#4A90D9' }, target: null,
+          }], error: null,
+        };
+      }
+      if (table === 'contacts' && ops.method === 'update') {
+        updatePayload = ops.payload;
+        updateFilters = ops.filters;
+        return { data: [{ id: 'req-1' }], error: null };
+      }
+      if (table === 'conversations' && ops.method === 'insert') {
+        convInserts++;
+        return { data: { id: 'conv-t1', type: 'direct', name: null, avatar_color: '#5B8C5A', created_by: ops.payload.created_by }, error: null };
+      }
+      if (table === 'conversation_members' && ops.method === 'insert') {
+        memberInserts++;
+        memberPayloads.push(ops.payload);
+        return { error: null };
+      }
+      return undefined;
+    },
+  });
+  const done = await app.waitInit();
+  assert(!!done, '初始化完成');
+
+  // 不存在的 id → 本地查找即失败，不触碰 DB
+  const bad = await app.w.acceptFriendRequest('nope');
+  assert(bad && bad.error === '该申请已失效', '不存在的申请 id 直接返回失效');
+
+  const res = await app.w.acceptFriendRequest('req-1');
+  assert(res && res.success === true, '接受成功（证明申请已落入 incoming）');
+  assert(res && res.name === '申请人', `返回申请人昵称（实际: ${res && res.name}）`);
+  assert(updatePayload && Object.keys(updatePayload).length === 1 && updatePayload.status === 'accepted', 'update 仅提交 {status:"accepted"}');
+  assert(updateFilters && updateFilters.some(f => f[0] === 'eq' && f[1] === 'status' && f[2] === 'pending'), 'update 带 status=pending 条件（防取消竞态）');
+  assert(convInserts === 1, '自动创建 1 个私聊会话');
+  const myId = app.w.localStorage.getItem('webchat_id');
+  assert(memberInserts === 2, `写入 2 行会话成员（实际 ${memberInserts}）`);
+  assert(memberPayloads[0] && memberPayloads[0].user_id === myId && memberPayloads[0].role === 'owner', '自己先以 owner 入会');
+  assert(memberPayloads[1] && memberPayloads[1].user_id === '88888' && memberPayloads[1].role === 'member', '对方后以 member 入会');
+  app.cleanup();
 }
 
 async function test4_xssAvatarColor() {
@@ -331,6 +391,7 @@ async function test5_notifyPreview() {
     await test3_addContact();
     await test4_xssAvatarColor();
     await test5_notifyPreview();
+    await test6_acceptRequest();
   } catch (e) {
     failed++;
     console.log('\n💥 测试套件异常:', e.stack || e);
