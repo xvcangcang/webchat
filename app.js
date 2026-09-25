@@ -215,7 +215,10 @@ async function recoverIdentity(oldCode) {
     .update({ auth_uid: null })
     .eq('id', state.myId)
     .eq('auth_uid', uid);
-  if (unbindErr) return { error: '解绑当前身份失败，请刷新后重试' };
+  if (unbindErr) {
+    console.error('找回身份：解绑当前身份失败', unbindErr);
+    return { error: `解绑当前身份失败（${unbindErr.code || unbindErr.message || '未知错误'}），请刷新后重试` };
+  }
 
   // 2) 认领原身份：行存在且未被占用（批量解绑 SQL 已执行）才匹配到；
   //    只改 auth_uid/last_seen，昵称与头像色从返回值读回以恢复原资料
@@ -227,6 +230,7 @@ async function recoverIdentity(oldCode) {
     .select('id, display_name, avatar_color');
 
   if (error || !data || data.length === 0) {
+    if (error) console.error('找回身份：认领原身份失败', error);
     // 原身份码不可用 → 回滚当前身份的绑定（若回滚也失败，刷新时 ensureIdentity 会重新认领）
     await state.supabase
       .from('users')
