@@ -13,6 +13,7 @@ const DEFAULT_USER_ROW = { id: ACCOUNT_CODE, display_name: '用户', avatar_colo
 
 const html = fs.readFileSync(path.join(ROOT, 'index.html'), 'utf8')
   .replace(/<script src="https:\/\/cdn\.jsdelivr[^>]+><\/script>/, '');
+const css = fs.readFileSync(path.join(ROOT, 'style.css'), 'utf8');
 // config.js 已入库；缺失时（如尚未创建）回退到模板（测试用假客户端，配置值无实际影响）
 const configSrc = fs.existsSync(path.join(ROOT, 'config.js')) ? 'config.js' : 'config.example.js';
 const sources = [configSrc, 'version.js', 'changelog.js', 'app.js']
@@ -906,6 +907,73 @@ async function test10_accountAuth() {
   app10.cleanup();
 }
 
+async function test11_guide() {
+  console.log('\n[T11] 使用指南：首次访问自动弹出 + 「不再自动弹出」偏好');
+
+  // 11a: 首次访问（无偏好）自动弹出，内容覆盖关键步骤
+  const app = createApp({ session: null });
+  await app.waitInit();
+  const d = app.w.document;
+  const guide = d.getElementById('modalGuide');
+  assert(!!guide, '使用指南弹窗存在于页面');
+  assert(guide.style.display === 'flex', '首次访问自动弹出使用指南');
+  const text = guide.textContent;
+  ['注册你的身份码', '加好友', '开始聊天', '换手机', '设置密码', '找回身份'].forEach(k => {
+    assert(text.includes(k), `指南覆盖关键操作：${k}`);
+  });
+  const chk = d.getElementById('guideNoMore');
+  assert(!!chk && !chk.checked, '默认不勾选「不再自动弹出」');
+  app.cleanup();
+
+  // 11b: 勾选即写入偏好（不必等关闭弹窗），取消勾选可恢复
+  const app1 = createApp({ session: null });
+  await app1.waitInit();
+  const c1 = app1.w.document.getElementById('guideNoMore');
+  c1.checked = true;
+  c1.dispatchEvent(new app1.w.Event('change', { bubbles: true }));
+  assert(app1.w.localStorage.getItem('webchat_guide_hidden') === '1', '勾选即写入本机偏好');
+  c1.checked = false;
+  c1.dispatchEvent(new app1.w.Event('change', { bubbles: true }));
+  assert(app1.w.localStorage.getItem('webchat_guide_hidden') === null, '取消勾选清除偏好');
+  app1.cleanup();
+
+  // 11c: 已选择不再弹出 → 以后打开网站都不打扰
+  const app2 = createApp({ session: null, localStorage: { webchat_guide_hidden: '1' } });
+  await app2.waitInit();
+  assert(app2.w.document.getElementById('modalGuide').style.display !== 'flex',
+    '已选择不再弹出时保持关闭');
+  app2.cleanup();
+
+  // 11c-2: 已登录用户同样遵守偏好（两个 init 出口都接上了）
+  const app2b = createApp({ localStorage: { webchat_guide_hidden: '1' } });
+  await app2b.waitInit();
+  assert(app2b.w.document.getElementById('modalGuide').style.display !== 'flex',
+    '已登录用户选择不再弹出后同样不打扰');
+  app2b.cleanup();
+
+  // 11d: 设置 → 关于 → 查看使用指南（手动重新打开，勾选框同步当前偏好）
+  const app3 = createApp({ session: null, localStorage: { webchat_guide_hidden: '1' } });
+  await app3.waitInit();
+  const d3 = app3.w.document;
+  d3.getElementById('btnSettings').click();
+  d3.querySelector('.settings-nav-item[data-section="about"]').click();
+  assert(d3.getElementById('sectionAbout').style.display === 'block', '切到「关于」分类');
+  const btn = d3.getElementById('btnShowGuide');
+  assert(!!btn, '「关于」里提供查看使用指南入口');
+  btn.click();
+  assert(d3.getElementById('modalSettings').style.display === 'none', '打开指南前先关闭设置弹窗');
+  assert(d3.getElementById('modalGuide').style.display === 'flex', '可手动重新打开使用指南');
+  assert(d3.getElementById('guideNoMore').checked, '手动打开时勾选框反映当前偏好');
+
+  d3.querySelector('#modalGuide .modal-close').click();
+  assert(d3.getElementById('modalGuide').style.display === 'none', '关闭指南');
+  assert(app3.w.localStorage.getItem('webchat_guide_hidden') === '1', '关闭指南不影响已保存的偏好');
+  app3.cleanup();
+
+  // 11e: 层级必须高于加载屏，否则开场 400ms 会被渐隐中的白屏压住（易踩的坑）
+  assert(/#modalGuide\s*\{\s*z-index:\s*10000/.test(css), '指南 z-index 高于加载屏（9999）');
+}
+
 (async () => {
   try {
     await test0_loggedOut();
@@ -919,6 +987,7 @@ async function test10_accountAuth() {
     await test8_recoverIdentity();
     await test9_maintenanceNotice();
     await test10_accountAuth();
+    await test11_guide();
   } catch (e) {
     failed++;
     console.log('\n💥 测试套件异常:', e.stack || e);
