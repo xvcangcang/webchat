@@ -303,3 +303,64 @@ BEGIN
     ALTER PUBLICATION supabase_realtime ADD TABLE messages;
   END IF;
 END $$;
+
+-- === 9. 身份解绑 / 找回（SECURITY DEFINER 函数） ===
+-- 为什么必须在服务端做：UPDATE 时 PostgreSQL 除了检查 UPDATE 策略的 WITH CHECK，
+-- 还要求"新行"满足 SELECT 策略的 USING（新行不能变得调用者自己看不见）。
+-- 解绑会把 auth_uid 置为 NULL，而 users_select 只放行 auth_uid = auth.uid() 的行，
+-- 于是新行不满足 SELECT 条件 → 报错 42501
+--   new row violates row-level security policy for table "users"
+-- （同理，认领一条 auth_uid IS NULL 的历史行时，那一行在 SELECT 策略下不可见，
+--   前端直接 update 会静默匹配 0 行。）
+-- 这两个函数以表所有者身份执行（表未开 FORCE ROW LEVEL SECURITY，所有者绕过 RLS），
+-- 访问规则改由函数内的 WHERE 兜住：只能解绑自己绑定的行；只能认领尚未被认领的行。
+
+-- 解绑当前账号绑定的身份（p_keep：保留不动的身份码，可为 NULL）
+CREATE OR REPLACE FUNCTION unbind_identity(p_keep text DEFAULT NULL) RETURNS void
+LANGUAGE sql SECURITY DEFINER SET search_path = public AS $$
+  UPDATE users SET auth_uid = NULL
+  WHERE auth_uid = auth.uid()
+    AND (p_keep IS NULL OR id <> p_keep);
+$$;
+
+-- 找回身份：解绑当前身份 + 认领原身份码（同一事务，失败整体回滚）
+-- 返回原身份资料，供前端恢复昵称与头像色
+CREATE OR REPLACE FUNCTION recover_identity(p_code text) RETURNS jsonb
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
+DECLARE
+  v_uid uuid := auth.uid();
+  v_row users;
+BEGIN
+  IF v_uid IS NULL THEN
+    RAISE EXCEPTION 'not_authenticated';
+  END IF;
+  IF p_code IS NULL OR p_code !~ '^[0-9]{5,6}$' THEN
+    RAISE EXCEPTION 'bad_code';
+  END IF;
+
+  -- 1) 腾出绑定：一个 auth 账号只绑一个身份
+  UPDATE users SET auth_uid = NULL
+  WHERE auth_uid = v_uid AND id <> p_code;
+
+  -- 2) 认领原身份：仅限尚未被认领的行；已属于本账号则幂等成功
+  UPDATE users SET auth_uid = v_uid, last_seen = NOW()
+  WHERE id = p_code AND auth_uid IS NULL;
+  IF NOT FOUND AND NOT EXISTS (
+    SELECT 1 FROM users WHERE id = p_code AND auth_uid = v_uid
+  ) THEN
+    RAISE EXCEPTION 'code_unavailable';
+  END IF;
+
+  SELECT * INTO v_row FROM users WHERE id = p_code;
+  RETURN jsonb_build_object(
+    'id', v_row.id,
+    'display_name', v_row.display_name,
+    'avatar_color', v_row.avatar_color
+  );
+END $$;
+
+-- 仅登录用户可调用（默认 PUBLIC 可执行，先收回再按角色授予）
+REVOKE ALL ON FUNCTION unbind_identity(text) FROM PUBLIC;
+REVOKE ALL ON FUNCTION recover_identity(text) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION unbind_identity(text) TO authenticated, service_role;
+GRANT EXECUTE ON FUNCTION recover_identity(text) TO authenticated, service_role;
