@@ -90,7 +90,7 @@ function makeClient(hooks, signInError) {
 }
 
 function defaultResult(table, ops) {
-  if (table === 'users' && ops.method === 'upsert') return { error: null };
+  if (table === 'users' && (ops.method === 'insert' || ops.method === 'upsert')) return { error: null };
   return { data: [], error: null };
 }
 
@@ -153,6 +153,8 @@ async function test0_initFailurePath() {
   assert(list.textContent.includes('匿名登录失败'), `显示"匿名登录失败"提示（实际: "${list.textContent.replace(/\s+/g, ' ').slice(0, 60)}"）`);
   const upsert = app.client()._calls.find(c => c.table === 'users' && c.method === 'upsert');
   assert(!upsert, '登录失败后未执行身份码认领');
+  const claimed = app.client()._calls.find(c => c.table === 'users' && c.method === 'insert');
+  assert(!claimed, '登录失败后未插入身份码行');
   app.cleanup();
 }
 
@@ -166,23 +168,29 @@ async function test1_initSuccess() {
   const myId = d.getElementById('myId').textContent;
   assert(/^\d{5}$/.test(myId), `身份码为 5 位数字（实际: ${myId}）`);
   assert(d.getElementById('toastContainer').textContent.includes('连接成功'), '显示"连接成功"');
-  const upsert = app.client()._calls.find(c => c.table === 'users' && c.method === 'upsert');
-  assert(!!upsert, '执行了 users upsert');
-  assert(upsert && upsert.payload.auth_uid === FAKE_UID, 'upsert 绑定了 auth_uid');
-  assert(upsert && upsert.payload.id === app.w.localStorage.getItem('webchat_id'), '身份码写入 localStorage 且与渲染一致');
+  const claim = app.client()._calls.find(c => c.table === 'users' && c.method === 'insert');
+  assert(!!claim, '执行了 users insert 认领');
+  assert(claim && claim.payload.auth_uid === FAKE_UID, '认领时绑定了 auth_uid');
+  assert(claim && claim.payload.id === app.w.localStorage.getItem('webchat_id'), '身份码写入 localStorage 且与渲染一致');
+  assert(app.client()._calls.filter(c => c.method === 'rpc' && c.rpc === 'unbind_identity').length === 1,
+    '认领前先解除本机历史身份残留绑定');
   assert(app.unhandled.length === 0, `无未捕获异常（${app.unhandled.length}）`);
   app.cleanup();
 }
 
 async function test2_codeCollisionRetry() {
-  console.log('\n[T2] 身份码被占用 → 自动换码重试');
-  let upsertCount = 0;
+  console.log('\n[T2] 身份码认领：插入 / 已存在走服务端认领 / 被占用换码');
+
+  // 2a: 该码已存在（23505）→ 服务端 recover_identity 认领成功，不换码、不丢身份
+  const claims = [];
   const app = createApp({
     hooks: (table, ops) => {
-      if (table === 'users' && ops.method === 'upsert') {
-        upsertCount++;
-        if (upsertCount === 1) return { error: { code: '42501', message: 'row-level security' } };
-        return { error: null };
+      if (table === 'users' && ops.method === 'insert') {
+        return { error: { code: '23505', message: 'duplicate key value violates unique constraint "users_pkey"' } };
+      }
+      if (ops.method === 'rpc' && ops.rpc === 'recover_identity') {
+        claims.push(ops.args);
+        return { data: { id: '11111', display_name: '我', avatar_color: '#4A90D9' }, error: null };
       }
       return undefined;
     },
@@ -190,11 +198,54 @@ async function test2_codeCollisionRetry() {
   });
   const done = await app.waitInit();
   assert(!!done, '初始化完成');
-  assert(upsertCount === 2, `第一次 42501 后重试（实际 ${upsertCount} 次 upsert）`);
-  const newId = app.w.localStorage.getItem('webchat_id');
-  assert(newId !== '11111' && /^\d{5}$/.test(newId), `已换新码（${newId}）`);
-  assert(app.w.document.getElementById('myId').textContent === newId, '界面同步显示新码');
+  assert(claims.length === 1 && claims[0].p_code === '11111',
+    `已存在的码交给服务端认领（实际 ${claims.length} 次）`);
+  assert(app.w.localStorage.getItem('webchat_id') === '11111', '认领成功不换码（历史身份保住）');
+  const prof = app.client()._calls.find(c => c.table === 'users' && c.method === 'update');
+  assert(!!prof, '认领成功后把本机昵称/头像写回');
   app.cleanup();
+
+  // 2b: 该码被他人占用（code_unavailable）→ 换一个新码
+  const app2 = createApp({
+    hooks: (table, ops) => {
+      if (table === 'users' && ops.method === 'insert') {
+        if (ops.payload.id === '11111') {
+          return { error: { code: '23505', message: 'duplicate key value violates unique constraint "users_pkey"' } };
+        }
+        return { error: null };
+      }
+      if (ops.method === 'rpc' && ops.rpc === 'recover_identity') {
+        return { data: null, error: { code: 'P0001', message: 'code_unavailable' } };
+      }
+      return undefined;
+    },
+    localStorage: { webchat_id: '11111' },
+  });
+  const done2 = await app2.waitInit();
+  assert(!!done2, '初始化完成');
+  const newId = app2.w.localStorage.getItem('webchat_id');
+  assert(newId !== '11111' && /^\d{5}$/.test(newId), `该码被占用 → 已换新码（${newId}）`);
+  assert(app2.w.document.getElementById('myId').textContent === newId, '界面同步显示新码');
+  app2.cleanup();
+
+  // 2c: 服务端函数缺失（还没执行新版 SQL）→ 明确提示，不静默失败
+  const app3 = createApp({
+    hooks: (table, ops) => {
+      if (ops.method === 'rpc' && ops.rpc === 'recover_identity') {
+        return { data: null, error: { code: 'PGRST202', message: 'Could not find the function public.recover_identity(p_code)' } };
+      }
+      if (table === 'users' && ops.method === 'insert') {
+        return { error: { code: '23505', message: 'duplicate key value violates unique constraint' } };
+      }
+      return undefined;
+    },
+    localStorage: { webchat_id: '11111' },
+  });
+  const done3 = await app3.waitInit();
+  assert(!!done3, '初始化结束（loading 隐藏）');
+  const banner = app3.w.document.getElementById('conversationList').textContent;
+  assert(banner.includes('supabase-setup.sql'), `提示需先执行 SQL（实际: "${banner.replace(/\s+/g, ' ').trim().slice(0, 60)}"）`);
+  app3.cleanup();
 }
 
 async function test3_addContact() {

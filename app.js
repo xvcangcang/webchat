@@ -165,32 +165,59 @@ async function ensureIdentity() {
 
   // 解绑本浏览器历史身份残留的 auth_uid（换码后旧码归还未认领）
   // 走服务端函数：把 auth_uid 置空的行在 RLS 下"自己看不见自己"，前端直接 update 会被拒 42501
-  // 尽力而为，失败不阻断后面的认领（函数缺失时行为与旧版一致）
-  await state.supabase.rpc('unbind_identity', { p_keep: state.myId });
+  // 尽力而为：函数缺失（还没跑新版 SQL）时不阻断后面的认领
+  const unbind = await state.supabase.rpc('unbind_identity', { p_keep: state.myId });
+  if (unbind && unbind.error) console.warn('unbind_identity 失败（可忽略）:', unbind.error);
 
-  // upsert 认领身份码；码被他人占用则换一个重试
+  // 认领身份码，三步走：
+  //   1) 该码还没人用 → INSERT 新建（INSERT 策略要求 auth_uid = 自己）
+  //   2) 该码已存在 → 服务端函数 recover_identity 认领：自己上次绑的行、或未被认领的
+  //      历史行都能拿回来；被别人占着则报 code_unavailable
+  //   3) 拿不回来 → 换一个码重试
+  // 不用 upsert：ON CONFLICT DO UPDATE 要求冲突行对自己可见，而别人的行/未认领的行
+  // 在 users_select 下都不可见，会被 RLS 挡下且错误码不可预期
   for (let i = 0; i < 20; i++) {
-    const { error } = await state.supabase
-      .from('users')
-      .upsert({
-        id: state.myId,
-        display_name: state.myName,
-        avatar_color: state.myColor,
-        last_seen: new Date().toISOString(),
-        auth_uid: uid,
-      }, { onConflict: 'id' });
+    const row = {
+      id: state.myId,
+      display_name: state.myName,
+      avatar_color: state.myColor,
+      last_seen: new Date().toISOString(),
+      auth_uid: uid,
+    };
+
+    let { error } = await state.supabase.from('users').insert(row);
+
+    if (error && error.code === '23505') {
+      const claim = await state.supabase.rpc('recover_identity', { p_code: state.myId });
+      if (!claim.error) {
+        // 认领成功：行已属于自己，把本机资料写回（昵称/头像以本机为准）
+        await state.supabase.from('users')
+          .update({
+            display_name: row.display_name,
+            avatar_color: row.avatar_color,
+            last_seen: row.last_seen,
+          })
+          .eq('id', state.myId);
+        return;
+      }
+      error = claim.error;
+    }
 
     if (!error) return;
 
-    // 42501 = RLS 拒绝（该码已被他人绑定）；23505 = 主键/唯一冲突
-    if (error.code === '42501' || error.code === '23505') {
-      state.myId = genShortId();
-      localStorage.setItem('webchat_id', state.myId);
-      renderMyInfo();
-      continue;
+    const msg = String(error.message || '');
+    if (msg.includes('code_unavailable') || error.code === '42501' || error.code === '23505') {
+      // 该码已被别人绑定（或 RLS 拒绝）→ 换一个码重试
+    } else if (/PGRST202|42883|does not exist/i.test(`${error.code} ${msg}`)) {
+      console.error('Claim identity error:', error);
+      throw new Error('服务端缺少身份函数，请先在 Supabase 执行最新的 supabase-setup.sql');
+    } else {
+      console.error('Claim identity error:', error);
+      throw new Error(`认领身份码失败（${error.code || '未知错误'}）：${msg.slice(0, 120)}`);
     }
-    console.error('Claim identity error:', error);
-    throw new Error('认领身份码失败，请刷新重试');
+    state.myId = genShortId();
+    localStorage.setItem('webchat_id', state.myId);
+    renderMyInfo();
   }
   throw new Error('无法分配身份码，请刷新重试');
 }
