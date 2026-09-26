@@ -20,7 +20,7 @@
 | Phase 3 测试 | ✅ **完成** `b6685a0`：`npm test` → **160 通过 / 0 失败**（账号流程已全覆盖） |
 | Phase 4 文档发版 | ✅ **完成** `505c634`：README 重写、`changelog.js` + `version.js` → **v2.0.0** |
 | Phase 5 收尾（关匿名登录、删过渡代码） | ⬜ 未开始（计划观察一两周后做，见 §10） |
-| 线上站点 | 已更新为 **v2.1.0**（账号登录版 + 使用指南），见 §15 |
+| 线上站点 | 已更新为 **v2.1.0**（账号登录版 + 使用指南），见 §15；**v2.1.1**（安全加固 + 消息窗口修复）见 §16，**SQL 部分需手动执行** |
 
 **执行结果**：Phase 2 的 UI 与绑定已按 §7.2 清单补完，测试与文档同步跟上，**一次性推送 Phase 1–4**，
 因此线上不会出现「未登录 + 点了没反应的按钮」的中间态（原计划的推送风险已消除）。
@@ -32,7 +32,7 @@
 - 目录：`C:\Users\123\Desktop\webchat`（单页前端：`index.html` + `app.js` + `style.css`，无框架无构建）
 - 仓库 / 部署：`https://github.com/xvcangcang/webchat` → GitHub Pages（push `master` 后自动更新）
 - 后端：Supabase 项目 ref `izsujvaficoajtcogiwx`（URL/anon key 在 `config.js`，**有意入库**）
-- 版本：`version.js` 的 `APP_VERSION`（现 `v2.1.0`）；`MAINTENANCE_NOTICE` 是维护弹窗开关（现 `false`）
+- 版本：`version.js` 的 `APP_VERSION`（现 `v2.1.1`）；`MAINTENANCE_NOTICE` 是维护弹窗开关（现 `false`）
 - 测试：`export PATH="$PATH:/c/Program Files/nodejs" && npm test`（jsdom + 假 Supabase 客户端，不需要真后端）
 - 提交约定：**每做一步提交一次**，中文提交信息带 `security:` / `feat:` / `fix:` / `test:` / `docs:` 前缀；改完即 `git push origin master`
 
@@ -471,3 +471,60 @@ curl -s -H "Authorization: Bearer $TOKEN" "$BASE/contents/HANDOFF.md?ref=handoff
 
 指南是纯前端、无副作用的功能，**不影响 Phase 5 的收尾计划**（关匿名登录、删过渡代码）。
 但 Phase 5 删掉「找回身份」时，**记得同步改 `#modalGuide` 里第 6 条**（现在写着「设置 → 找回身份 可用原身份码找回」）。
+
+---
+
+## 16. 追加：安全审查与消息窗口修复（v2.1.1，2026-09-26）
+
+一次全项目审查（安全 + 性能）后的修复，分四次提交。**每一步都跑了 `npm test` 并做了反向验证**
+（把修复临时撤掉，确认测试真的会失败），测试数 **188 → 197**。
+
+### 16.1 必须先做的事：第 10 节 SQL 要手动执行
+
+`supabase-setup.sql` 新增的 **§10 安全加固**（提交 `59b6eb8`）**不会随网站自动生效** ——
+前端代码 push 到 GitHub Pages 就上线了，但 SQL 只改仓库文件，数据库不会自己变。
+
+**必须**去 Supabase SQL Editor 把这个文件的 §10 手动跑一遍（整节可重复执行，幂等）。
+没跑之前：`users_update` 仍缺少身份码格式约束，前端那层收口（16.2）是唯一防线。
+
+### 16.2 关键漏洞：账号接管链（已修）
+
+`users_update` 策略原先只校验 `auth_uid = auth.uid()`，而 UPDATE 的 `WITH CHECK` **看不到旧行**，
+未受保护的列可以被任意改写。攻击者只要把自己的 `id` 改成别人的身份码，就能把对方账号顶掉。
+修复是给 `WITH CHECK` 补上 `id ~ '^[0-9]{5,6}$'`（§10 第 1 条），前端 `adoptIdentity()` 同步收口。
+
+`adoptIdentity()` 现在返回布尔值：身份码格式非法一律不采纳，调用方按「有会话但无身份」处理。
+这个值会流进 HTML 插值（「新的朋友」申请列表）和 PostgREST 过滤串（`loadContacts` 的 `.or(...)`），
+所以格式校验是防注入的第一道闸。申请列表那两处插值也补了 `escapeHtml`。
+
+### 16.3 消息窗口与轮询（三个「用久了消息就不见了」的坑）
+
+这三个都不报错、不崩，只是行为慢慢错掉，**没有测试根本发现不了**：
+
+| 位置 | 问题 | 修法 |
+|---|---|---|
+| `loadMessages` | `ascending: true` + `limit(500)` 取到的是**最早**的 500 条。会话超过 500 条后新消息永远进不了界面，且每次打开会话都会把 `state` 覆盖回那批老消息 | 改降序取最新窗口，再 `.reverse()` 成升序交给渲染 |
+| `_lastPollTime` | 基准取自**本机时钟**，而 `created_at` 是服务端时间。本机时钟快多少，那段偏差内的消息就被 `.gt()` 永久挡住（基准只随取到的行前进，不会自己回退） | 回退 30s 安全余量 + 按 id 去重兜住重叠 |
+| `pollMessages` | 3s 的 `setInterval` 不等待上一次结束，慢查询会让两次请求用同一个基准取回同一批消息 → 重复上屏 | 加在途标记挡住并发；推送前按 id 去重 |
+
+对应 `test13`，用真 PostgREST 的降序返回顺序和「新消息 + 重复消息」的轮询载荷钉住。
+反向验证：撤掉降序 → 4 条失败；撤掉去重 → 2 条失败（输出 `m1,m2,m3,m2,m4,m2,m4`，正是重复上屏）。
+
+### 16.4 报过但**不能按原方案修**的项（需要产品决策）
+
+这几项修了就会改变功能，而需求是「保障网站功能的前提下修复」，所以**留在这里等决定**：
+
+- **`messages_delete` 策略偏松** —— 任何成员能删会话内任意消息。但
+  「清空聊天记录」（[app.js:1029](app.js#L1029)）本身就是 `.delete().eq('conversation_id', convId)`，
+  **不带 sender 过滤，就是要删掉所有人的消息**。RLS 的宽松和这个功能是配套的，收紧会直接打坏它。
+- **单方删除会摧毁对方的聊天历史** —— `deleteFriend` / `blockUser` 连带删消息，对方那边记录一起没。
+  正确的修法是软删除（加 `deleted_at` 字段），属于表结构变更。
+- **`recover_identity` 是枚举/认领预言机** —— 拿身份码就能认领身份。需要限流表或改用别的找回方式。
+- **拉黑只存在 `localStorage`** —— 换设备即失效，需要新建 `blocks` 表。
+
+### 16.5 未做的性能项
+
+- 每 3 秒约 5 个查询的轮询（`pollContacts` → `loadContacts` + messages + `loadConversations`）。
+  在途标记已挡掉叠发，但轮询间隔本身没动 —— 改它会直接影响消息实时性。
+- `conversation_last_message` 视图的谓词下推：需要在线跑 `EXPLAIN` 才能确认是否退化成全表扫描，
+  没在真实库上验证过，**不做无依据的改动**。
