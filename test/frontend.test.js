@@ -974,6 +974,48 @@ async function test11_guide() {
   assert(/#modalGuide\s*\{\s*z-index:\s*10000/.test(css), '指南 z-index 高于加载屏（9999）');
 }
 
+async function test12_identityHardening() {
+  console.log('\n[T12] 身份码加固：非法 id 不被采纳 + 申请列表转义');
+
+  // 12a: 数据库里的身份码被改成非数字（users_update 曾允许，见 supabase-setup.sql §10）
+  //      → 前端必须拒绝采纳，且不得把污染值拼进 contacts 的 PostgREST 过滤串
+  const app1 = createApp({
+    userRow: { id: '<img src=x onerror=alert(1)>', display_name: '攻击者', avatar_color: '#4A90D9' },
+  });
+  const done1 = await app1.waitInit();
+  assert(!!done1, '初始化完成（非法身份码不阻塞启动）');
+  assert(app1.w.document.getElementById('myId').textContent === '------', '非法身份码按未登录处理');
+  assert(app1.w.localStorage.getItem('webchat_id') === null, '非法身份码不写入本地缓存');
+  const contactCalls = app1.client()._calls.filter(c => c.table === 'contacts');
+  assert(contactCalls.length === 0, '非法身份码不触发 contacts 查询（否则拼进 .or() 造成过滤注入）');
+  app1.cleanup();
+
+  // 12b: 收到的申请里，对方身份码是恶意串 → 渲染必须转义（原为未转义插值，构成存储型 XSS）
+  const PAYLOAD = '<img src=x onerror=alert(1)>';
+  const app2 = createApp({
+    hooks: (table, ops) => {
+      if (table === 'contacts' && ops.method === 'select') {
+        return {
+          data: [{
+            id: 'req-x', user_id: PAYLOAD, contact_id: ACCOUNT_CODE, status: 'pending', remark: null,
+            owner: { display_name: '攻击者', avatar_color: '#4A90D9' }, target: null,
+          }], error: null,
+        };
+      }
+      return undefined;
+    },
+  });
+  const done2 = await app2.waitInit();
+  assert(!!done2, '初始化完成');
+  app2.w.renderFriendRequests();
+  const listEl = app2.w.document.getElementById('incomingReqList');
+  // 实质判据：DOM 里是否真的生成了 img 元素（不能拿 innerHTML 回读比对 ——
+  // 回读会重新序列化，src=x 会变成 src="x"，那种断言两种情况下都通过）
+  assert(!listEl.querySelector('img'), '申请列表里没有被注入的 <img> 元素（XSS 未触发）');
+  assert(listEl.innerHTML.includes('&lt;img'), '恶意身份码被 HTML 转义后输出');
+  app2.cleanup();
+}
+
 (async () => {
   try {
     await test0_loggedOut();
@@ -988,6 +1030,7 @@ async function test11_guide() {
     await test9_maintenanceNotice();
     await test10_accountAuth();
     await test11_guide();
+    await test12_identityHardening();
   } catch (e) {
     failed++;
     console.log('\n💥 测试套件异常:', e.stack || e);

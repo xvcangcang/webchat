@@ -128,7 +128,13 @@ async function resolveSession() {
 }
 
 // 把某一行 users 认作自己的身份，并写回本地缓存（供下次首屏）
+// 返回 false = 该行的身份码格式非法，拒绝采纳（调用方按「有会话但无身份」处理）
 function adoptIdentity(row) {
+  // 身份码必须是 5-6 位数字。数据库层已用 users_update 的 WITH CHECK 约束住
+  // （见 supabase-setup.sql §10），这里是前端收口点：该值会流进 HTML 插值
+  // （「新的朋友」列表）和 PostgREST 过滤串（loadContacts 的 .or(...)），
+  // 格式不对一律不采纳，避免把污染值带进渲染或查询。
+  if (!/^\d{5,6}$/.test(String((row && row.id) || ''))) return false;
   state.myId = row.id;
   if (row.display_name) state.myName = row.display_name;
   if (/^#[0-9A-Fa-f]{6}$/.test(row.avatar_color || '')) state.myColor = row.avatar_color;
@@ -136,6 +142,7 @@ function adoptIdentity(row) {
   localStorage.setItem('webchat_name', state.myName);
   localStorage.setItem('webchat_color', state.myColor);
   renderMyInfo();
+  return true;
 }
 
 // 由会话把身份取回来。返回 false = 有会话但没有对应身份码 → 按未登录处理
@@ -148,7 +155,7 @@ async function loadIdentity(auth) {
       .eq('id', auth.code)
       .maybeSingle();
     if (error) throw new Error(`读取身份失败：${error.message || error.code}`);
-    if (data && data.id) { adoptIdentity(data); return true; }
+    if (data && data.id) return adoptIdentity(data);   // 格式非法时返回 false → 按未登录处理
 
     // 行丢失（异常情况）→ 补建一次
     const ins = await state.supabase.from('users').insert({
@@ -172,7 +179,7 @@ async function loadIdentity(auth) {
     .eq('auth_uid', auth.uid)
     .maybeSingle();
   if (error) throw new Error(`读取身份失败：${error.message || error.code}`);
-  if (data && data.id) { adoptIdentity(data); return true; }
+  if (data && data.id) return adoptIdentity(data);   // 格式非法时返回 false → 按未登录处理
 
   // 会话在但没有任何行绑定它：本机若还留着身份码，认领回来（v1.9.0 兼容路径）
   // 只有「本来就有会话」的浏览器会走到这里；新浏览器没有会话，因此不会被自动分配身份码
@@ -181,12 +188,11 @@ async function loadIdentity(auth) {
     const claim = await state.supabase.rpc('recover_identity', { p_code: cached });
     if (!claim.error) {
       const row = claim.data || {};
-      adoptIdentity({
+      return adoptIdentity({
         id: row.id || cached,
         display_name: row.display_name,
         avatar_color: row.avatar_color,
       });
-      return true;
     }
     const msg = String(claim.error.message || '');
     if (/PGRST202|42883|does not exist/i.test(`${claim.error.code} ${msg}`)) {
@@ -571,7 +577,7 @@ function renderFriendRequests() {
         <div class="member-avatar" style="background:${r.avatar_color}">${escapeHtml((r.display_name || '?').charAt(0))}</div>
         <div class="friend-req-info">
           <div class="member-name">${escapeHtml(r.display_name)}</div>
-          <div class="friend-req-sub">${r.contact_id} 请求加你为好友</div>
+          <div class="friend-req-sub">${escapeHtml(r.contact_id)} 请求加你为好友</div>
         </div>
         <div class="friend-req-actions">
           <button class="link-btn" data-action="accept">接受</button>
@@ -588,7 +594,7 @@ function renderFriendRequests() {
         <div class="member-avatar" style="background:${r.avatar_color}">${escapeHtml((r.display_name || '?').charAt(0))}</div>
         <div class="friend-req-info">
           <div class="member-name">${escapeHtml(r.display_name)}</div>
-          <div class="friend-req-sub">已发送申请 · ${r.contact_id}</div>
+          <div class="friend-req-sub">已发送申请 · ${escapeHtml(r.contact_id)}</div>
         </div>
         <div class="friend-req-actions">
           <button class="link-btn" disabled>等待验证</button>
