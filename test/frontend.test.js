@@ -1,6 +1,6 @@
 // WebChat 前端集成测试（jsdom + 假 Supabase 后端）
 // 运行：npm install && npm test（无需真实后端、无需起 HTTP 服务）
-const { JSDOM } = require('jsdom');
+const { JSDOM, VirtualConsole } = require('jsdom');
 const fs = require('fs');
 const path = require('path');
 
@@ -63,12 +63,24 @@ function makeBuilder(table, hooks, calls) {
 }
 
 // 默认会话 = 账号会话（身份码 12345 来自邮箱前缀）；opts.session 传 null 模拟新浏览器
+// opts.auth 覆盖各 auth 方法的行为（例：{ signUp: () => ({ error: { code: 'user_already_exists' } }) }）
 function makeClient(hooks, opts = {}) {
   const session = opts.session === undefined ? DEFAULT_SESSION : opts.session;
   const calls = [];
+  const authHooks = opts.auth || {};
+  const callAuth = (name, args) => {
+    calls.push({ method: 'auth', table: 'auth', auth: name, args });
+    if (authHooks[name]) return authHooks[name](args);
+    return { data: {}, error: null };
+  };
   const client = {
     auth: {
       getSession: async () => ({ data: { session }, error: null }),
+      signUp: async (a) => callAuth('signUp', a),
+      signInWithPassword: async (a) => callAuth('signInWithPassword', a),
+      signInAnonymously: async () => callAuth('signInAnonymously'),
+      updateUser: async (a) => callAuth('updateUser', a),
+      signOut: async () => callAuth('signOut'),
     },
     from(table) { return makeBuilder(table, hooks, calls); },
     rpc(name, args) {
@@ -107,13 +119,29 @@ function createApp(overrides = {}) {
     }
     return defaultResult(table, ops);
   };
+  // location.reload() 在 jsdom 里必然报「Not implemented: navigation」——不当错误，
+  // 反而记下来当"流程走完了并刷新页面"的证据（reloads()）
+  const reloads = [];
+  const vc = new VirtualConsole();
+  vc.on('jsdomError', (e) => {
+    const msg = String((e && e.message) || e);
+    if (/Not implemented/i.test(msg)) { reloads.push(msg); return; }
+    console.error(msg);
+  });
+  ['error', 'warn', 'info', 'log', 'dir', 'debug'].forEach(m => {
+    vc.on(m, (...args) => console[m](...args));   // 与默认虚拟控制台一致：页面日志照常打印
+  });
+
   const dom = new JSDOM(html, {
     url: 'https://local.test/',
     runScripts: 'outside-only',
     pretendToBeVisual: false,
+    virtualConsole: vc,
   });
   const w = dom.window;
   w.requestAnimationFrame = cb => w.setTimeout(cb, 0);
+  // jsdom 的 confirm() 恒为 undefined（只报 Not implemented）→ 默认放行，需要拒绝时用 overrides.confirm
+  w.confirm = overrides.confirm === undefined ? () => true : overrides.confirm;
   const unhandled = [];
   w.addEventListener('error', e => unhandled.push(e.message));
 
@@ -127,7 +155,9 @@ function createApp(overrides = {}) {
   };
 
   let client = null;
-  w.supabase = { createClient: () => (client = makeClient(hooks, { session: overrides.session })) };
+  w.supabase = {
+    createClient: () => (client = makeClient(hooks, { session: overrides.session, auth: overrides.auth })),
+  };
 
   if (overrides.localStorage) {
     for (const [k, v] of Object.entries(overrides.localStorage)) w.localStorage.setItem(k, v);
@@ -138,6 +168,7 @@ function createApp(overrides = {}) {
     w, dom,
     client: () => client,
     unhandled,
+    reloads: () => reloads.length,   // 页面刷新次数（注册/登录/升级成功后应为 1）
     async waitInit() {
       return waitFor(() => {
         const ls = w.document.getElementById('loadingScreen');
@@ -622,6 +653,259 @@ async function test9_maintenanceNotice() {
   app.cleanup();
 }
 
+// ---- T10 辅助：走真实 DOM，覆盖 openAuthModal / bindEvents 的接线 ----
+function fillAuthForm(w, { code, pwd, pwd2 } = {}) {
+  const d = w.document;
+  if (code !== undefined) d.getElementById('inputAuthCode').value = code;
+  if (pwd !== undefined) d.getElementById('inputAuthPwd').value = pwd;
+  if (pwd2 !== undefined) d.getElementById('inputAuthPwd2').value = pwd2;
+  d.getElementById('btnAuthSubmit').click();
+}
+
+// 每次提交前清空提示，便于等待"这一次"的结果
+async function submitAndRead(w, vals, timeout = 3000) {
+  w.document.getElementById('authFeedback').textContent = '';
+  fillAuthForm(w, vals);
+  return waitFor(() => {
+    const t = w.document.getElementById('authFeedback').textContent;
+    return t ? t : null;
+  }, timeout);
+}
+
+async function test10_accountAuth() {
+  console.log('\n[T10] 账号：注册 / 登录 / 设置密码 / 退出登录 + 未登录入口');
+
+  // 10a: 注册成功 — 身份码映射合成邮箱 → auth.signUp → INSERT users 行 → 刷新
+  const signUps = [];
+  const insertedRows = [];
+  const app = createApp({
+    session: null,
+    auth: {
+      signUp: (a) => {
+        signUps.push(a);
+        return { data: { user: { id: 'uid-new', email: a.email }, session: { user: { id: 'uid-new' } } }, error: null };
+      },
+    },
+    hooks: (table, ops) => {
+      if (table === 'users' && ops.method === 'insert') { insertedRows.push(ops.payload); return { error: null }; }
+      return undefined;
+    },
+  });
+  await app.waitInit();
+  const d = app.w.document;
+  d.querySelector('#conversationList [data-auth-action="register"]').click();
+  assert(d.getElementById('modalAuth').style.display === 'flex', '未登录点「注册账号」打开账号弹窗');
+  assert(d.getElementById('authTitle').textContent === '注册账号', '进入注册模式');
+  assert(d.getElementById('authConfirmWrap').style.display === 'block', '注册模式显示确认密码');
+  assert(d.getElementById('authCodeWrap').style.display === 'block', '注册模式需要身份码');
+
+  const fb = await submitAndRead(app.w, { code: '24680', pwd: 'password1', pwd2: 'password1' });
+  assert(!!fb && fb.includes('成功'), `注册成功给出提示（实际: "${fb}"）`);
+  assert(signUps.length === 1 && signUps[0].email === '24680@xvcangcang.github.io',
+    `身份码映射为合成邮箱（实际: ${signUps[0] && signUps[0].email}）`);
+  assert(signUps[0] && signUps[0].password === 'password1', '密码交给 Supabase Auth（前端不落库）');
+  assert(insertedRows.length === 1 && insertedRows[0].id === '24680', 'users 行以身份码为主键');
+  assert(insertedRows[0] && insertedRows[0].auth_uid === 'uid-new', '身份行绑定到新账号 uid');
+  assert(app.reloads() === 1, `注册成功后刷新页面（实际 ${app.reloads()} 次）`);
+  app.cleanup();
+
+  // 10b: 撞码（邮箱已注册 422）→ 可读提示，不写库不刷新
+  const app2 = createApp({
+    session: null,
+    auth: {
+      signUp: () => ({
+        data: { user: null, session: null },
+        error: { code: 'user_already_exists', status: 422, message: 'User already registered' },
+      }),
+    },
+  });
+  await app2.waitInit();
+  app2.w.openAuthModal('register');
+  const fb2 = await submitAndRead(app2.w, { code: '12345', pwd: 'password1', pwd2: 'password1' });
+  assert(fb2 === '该身份码已被注册，换一个试试', `撞码提示可读（实际: "${fb2}"）`);
+  assert(app2.client()._calls.filter(c => c.table === 'users' && c.method === 'insert').length === 0,
+    '撞码时不写身份行');
+  assert(app2.reloads() === 0, '撞码时不刷新页面');
+  app2.cleanup();
+
+  // 10c: 第二步建行失败 → 必须 signOut 回滚，不留"有账号没身份"的孤儿
+  let signOuts = 0;
+  const app3 = createApp({
+    session: null,
+    auth: {
+      signUp: (a) => ({ data: { user: { id: 'uid-new', email: a.email }, session: { user: { id: 'uid-new' } } }, error: null }),
+      signOut: () => { signOuts++; return { error: null }; },
+    },
+    hooks: (table, ops) => {
+      if (table === 'users' && ops.method === 'insert') {
+        return { error: { code: '23505', message: 'duplicate key value violates unique constraint' } };
+      }
+      return undefined;
+    },
+  });
+  await app3.waitInit();
+  app3.w.openAuthModal('register');
+  const fb3 = await submitAndRead(app3.w, { code: '24680', pwd: 'password1', pwd2: 'password1' });
+  assert(fb3 === '该身份码已被注册，换一个试试', `建行撞码提示可读（实际: "${fb3}"）`);
+  assert(signOuts === 1, `建行失败回滚会话（实际 signOut ${signOuts} 次）`);
+  assert(app3.reloads() === 0, '注册失败不刷新页面');
+  app3.cleanup();
+
+  // 10d: 登录成功 — 任何设备用身份码+密码回到同一 uid
+  const logins = [];
+  const app4 = createApp({
+    session: null,
+    auth: { signInWithPassword: (a) => { logins.push(a); return { data: { user: { id: ACCOUNT_CODE } }, error: null }; } },
+  });
+  await app4.waitInit();
+  const d4 = app4.w.document;
+  d4.querySelector('#conversationList [data-auth-action="login"]').click();
+  assert(d4.getElementById('authTitle').textContent === '登录', '未登录点「登录」进入登录模式');
+  assert(d4.getElementById('authConfirmWrap').style.display === 'none', '登录不显示确认密码');
+  const fb4 = await submitAndRead(app4.w, { code: '54321', pwd: 'password1' });
+  assert(!!fb4 && fb4.includes('成功'), `登录成功给出提示（实际: "${fb4}"）`);
+  assert(logins.length === 1 && logins[0].email === '54321@xvcangcang.github.io',
+    `登录用合成邮箱（实际: ${logins[0] && logins[0].email}）`);
+  assert(app4.reloads() === 1, '登录成功后刷新页面');
+  app4.cleanup();
+
+  // 10e: 密码错误 → 不泄露"账号是否存在"，也不刷新
+  const app5 = createApp({
+    session: null,
+    auth: {
+      signInWithPassword: () => ({
+        error: { code: 'invalid_credentials', message: 'Invalid login credentials' },
+      }),
+    },
+  });
+  await app5.waitInit();
+  app5.w.openAuthModal('login');
+  const fb5 = await submitAndRead(app5.w, { code: '54321', pwd: 'wrongpass' });
+  assert(fb5 === '身份码或密码不正确', `密码错误提示可读（实际: "${fb5}"）`);
+  assert(app5.reloads() === 0, '登录失败不刷新页面');
+  app5.cleanup();
+
+  // 10f: 本地校验先于网络请求（格式 / 长度 / 两次不一致 / 必填）
+  let signUpCalls = 0;
+  const app6 = createApp({
+    session: null,
+    auth: { signUp: () => { signUpCalls++; return { data: { user: { id: 'u' }, session: { user: { id: 'u' } } }, error: null }; } },
+  });
+  await app6.waitInit();
+  app6.w.openAuthModal('register');
+  const bad1 = await submitAndRead(app6.w, { code: '1234', pwd: 'password1', pwd2: 'password1' });
+  assert(bad1 === '身份码必须是 5-6 位数字', `身份码格式本地拦截（实际: "${bad1}"）`);
+  const bad2 = await submitAndRead(app6.w, { code: '24680', pwd: 'short12', pwd2: 'short12' });
+  assert(bad2 === '密码至少 8 位', `密码长度本地拦截（实际: "${bad2}"）`);
+  const bad3 = await submitAndRead(app6.w, { code: '24680', pwd: 'password1', pwd2: 'password2' });
+  assert(bad3 === '两次输入的密码不一致', `两次不一致本地拦截（实际: "${bad3}"）`);
+  const bad4 = await submitAndRead(app6.w, { code: '', pwd: 'password1', pwd2: 'password1' });
+  assert(bad4 === '请输入身份码', `空身份码本地拦截（实际: "${bad4}"）`);
+  assert(signUpCalls === 0, '全部本地拦截，未发起注册请求');
+  assert(app6.reloads() === 0, '校验失败不刷新页面');
+  app6.cleanup();
+
+  // 10g: 老用户升级 — 设置里的入口 → updateUser（uid 不变，好友与记录不用动）
+  const updates = [];
+  const app7 = createApp({
+    session: LEGACY_SESSION,
+    userRow: { id: '54321', display_name: '老王', avatar_color: '#5B8C5A' },
+    auth: { updateUser: (a) => { updates.push(a); return { data: { user: { id: FAKE_UID, email: a.email } }, error: null }; } },
+  });
+  await app7.waitInit();
+  const d7 = app7.w.document;
+  d7.getElementById('btnSettings').click();
+  const box7 = d7.getElementById('accountBox');
+  assert(box7.textContent.includes('54321'), '过渡期老用户在账号区看到自己的身份码');
+  const upgradeBtn = box7.querySelector('[data-account-action="upgrade"]');
+  assert(!!upgradeBtn, '过渡期老用户看到「设置密码」入口');
+  assert(d7.getElementById('recoverIdentityBlock').style.display === 'block', '老用户仍能看到「找回身份」');
+  upgradeBtn.click();
+  assert(d7.getElementById('modalSettings').style.display === 'none', '点设置密码后关闭设置弹窗');
+  assert(d7.getElementById('modalAuth').style.display === 'flex', '并打开账号弹窗');
+  assert(d7.getElementById('authTitle').textContent === '设置密码', '进入设置密码模式');
+  assert(d7.getElementById('authCodeWrap').style.display === 'none', '设置密码不需要输身份码（沿用现有身份）');
+
+  const fb7 = await submitAndRead(app7.w, { pwd: 'password1', pwd2: 'password1' });
+  assert(!!fb7 && fb7.includes('成功'), `设置密码成功给出提示（实际: "${fb7}"）`);
+  assert(updates.length === 1, `调用 updateUser 升级当前会话（实际 ${updates.length} 次）`);
+  assert(updates[0] && updates[0].email === '54321@xvcangcang.github.io',
+    `邮箱由现有身份码派生（实际: ${updates[0] && updates[0].email}）`);
+  assert(app7.client()._calls.filter(c => c.method === 'auth' && c.auth === 'signUp').length === 0,
+    '升级走 updateUser（uid 不变），不新建账号');
+  assert(app7.reloads() === 1, '升级成功后刷新页面');
+  app7.cleanup();
+
+  // 10h: 账号用户账号区 + 退出登录（清本机身份码缓存）
+  const app8 = createApp();
+  await app8.waitInit();
+  const d8 = app8.w.document;
+  d8.getElementById('btnSettings').click();
+  const box8 = d8.getElementById('accountBox');
+  assert(box8.textContent.includes('12345'), '账号用户在账号区看到自己的身份码');
+  assert(!!box8.querySelector('[data-account-action="password"]'), '账号用户可修改密码');
+  assert(!!box8.querySelector('[data-account-action="logout"]'), '账号用户可退出登录');
+  assert(d8.getElementById('recoverIdentityBlock').style.display === 'none',
+    '账号用户隐藏「找回身份」（登录即回到原身份）');
+
+  d8.querySelector('#accountBox [data-account-action="logout"]').click();
+  const cleared = await waitFor(() => !app8.w.localStorage.getItem('webchat_id'));
+  assert(!!cleared, '退出登录后清除本机身份码缓存');
+  assert(app8.client()._calls.filter(c => c.method === 'auth' && c.auth === 'signOut').length === 1,
+    '退出登录调用 signOut');
+  assert(app8.reloads() === 1, '退出登录后刷新页面');
+  app8.cleanup();
+
+  // 10h-2: 取消确认则不退出（避免误点丢身份）
+  const app8b = createApp({ confirm: () => false });
+  await app8b.waitInit();
+  app8b.w.document.getElementById('btnSettings').click();
+  app8b.w.document.querySelector('#accountBox [data-account-action="logout"]').click();
+  await sleep(50);
+  assert(app8b.w.localStorage.getItem('webchat_id') === ACCOUNT_CODE, '取消确认时保留本机身份码');
+  assert(app8b.client()._calls.filter(c => c.method === 'auth' && c.auth === 'signOut').length === 0,
+    '取消确认时不调用 signOut');
+  app8b.cleanup();
+
+  // 10i: 未登录首屏的找回入口 → 打开设置并聚焦原身份码输入框
+  const app9 = createApp({ session: null });
+  await app9.waitInit();
+  const d9 = app9.w.document;
+  assert(!!d9.querySelector('#conversationList [data-auth-action="recover"]'), '未登录首屏有「找回原身份码」入口');
+  d9.querySelector('#conversationList [data-auth-action="recover"]').click();
+  assert(d9.getElementById('modalSettings').style.display === 'flex', '点找回打开设置弹窗');
+  const focused = await waitFor(() => d9.activeElement && d9.activeElement.id === 'inputRecoverId', 1500);
+  assert(!!focused, '并聚焦到原身份码输入框');
+  app9.cleanup();
+
+  // 10j: 弹窗模式切换 + 随机生成 + 回车提交
+  const app10 = createApp({ session: null });
+  await app10.waitInit();
+  const d10 = app10.w.document;
+  app10.w.openAuthModal('login');
+  assert(d10.getElementById('btnAuthSwitch').textContent === '还没有账号？去注册', '登录模式显示切换文案');
+  assert(d10.getElementById('btnGenCode').style.display === 'none', '登录模式不显示随机生成');
+  d10.getElementById('btnAuthSwitch').click();
+  assert(d10.getElementById('authTitle').textContent === '注册账号', '点切换进入注册模式');
+  assert(d10.getElementById('btnGenCode').style.display !== 'none', '注册模式显示随机生成按钮');
+  d10.getElementById('btnGenCode').click();
+  const gen = d10.getElementById('inputAuthCode').value;
+  assert(/^\d{5,6}$/.test(gen), `随机生成 5-6 位数字身份码（实际: "${gen}"）`);
+
+  d10.getElementById('inputAuthCode').value = '24680';
+  d10.getElementById('inputAuthPwd').value = 'password1';
+  d10.getElementById('inputAuthPwd2').value = 'password2';
+  d10.getElementById('inputAuthPwd2')
+    .dispatchEvent(new app10.w.KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+  assert(d10.getElementById('authFeedback').textContent === '两次输入的密码不一致', '输入框回车即提交');
+
+  d10.getElementById('btnAuthSwitch').click();
+  assert(d10.getElementById('authTitle').textContent === '登录', '再切换回到登录模式');
+  assert(d10.getElementById('inputAuthCode').value === '' && d10.getElementById('inputAuthPwd').value === '',
+    '切换模式时清空上次输入（不残留密码）');
+  app10.cleanup();
+}
+
 (async () => {
   try {
     await test0_loggedOut();
@@ -634,6 +918,7 @@ async function test9_maintenanceNotice() {
     await test7_pollContactsSync();
     await test8_recoverIdentity();
     await test9_maintenanceNotice();
+    await test10_accountAuth();
   } catch (e) {
     failed++;
     console.log('\n💥 测试套件异常:', e.stack || e);
