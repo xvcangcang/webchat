@@ -32,7 +32,7 @@
 - 目录：`C:\Users\123\Desktop\webchat`（单页前端：`index.html` + `app.js` + `style.css`，无框架无构建）
 - 仓库 / 部署：`https://github.com/xvcangcang/webchat` → GitHub Pages（push `master` 后自动更新）
 - 后端：Supabase 项目 ref `izsujvaficoajtcogiwx`（URL/anon key 在 `config.js`，**有意入库**）
-- 版本：`version.js` 的 `APP_VERSION`（现 `v1.9.2`）；`MAINTENANCE_NOTICE` 是维护弹窗开关（现 `false`）
+- 版本：`version.js` 的 `APP_VERSION`（现 `v2.1.0`）；`MAINTENANCE_NOTICE` 是维护弹窗开关（现 `false`）
 - 测试：`export PATH="$PATH:/c/Program Files/nodejs" && npm test`（jsdom + 假 Supabase 客户端，不需要真后端）
 - 提交约定：**每做一步提交一次**，中文提交信息带 `security:` / `feat:` / `fix:` / `test:` / `docs:` 前缀；改完即 `git push origin master`
 
