@@ -6,6 +6,10 @@ const path = require('path');
 
 const ROOT = path.resolve(__dirname, '..');
 const FAKE_UID = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+const ACCOUNT_CODE = '12345';
+const DEFAULT_SESSION = { user: { id: FAKE_UID, email: `${ACCOUNT_CODE}@xvcangcang.github.io` } };
+const LEGACY_SESSION = { user: { id: FAKE_UID } };   // 匿名会话（老用户）
+const DEFAULT_USER_ROW = { id: ACCOUNT_CODE, display_name: '用户', avatar_color: '#4A90D9' };
 
 const html = fs.readFileSync(path.join(ROOT, 'index.html'), 'utf8')
   .replace(/<script src="https:\/\/cdn\.jsdelivr[^>]+><\/script>/, '');
@@ -58,17 +62,13 @@ function makeBuilder(table, hooks, calls) {
   return b;
 }
 
-function makeClient(hooks, signInError) {
-  let session = null;
+// 默认会话 = 账号会话（身份码 12345 来自邮箱前缀）；opts.session 传 null 模拟新浏览器
+function makeClient(hooks, opts = {}) {
+  const session = opts.session === undefined ? DEFAULT_SESSION : opts.session;
   const calls = [];
   const client = {
     auth: {
       getSession: async () => ({ data: { session }, error: null }),
-      signInAnonymously: async () => {
-        if (signInError) return { data: { session: null }, error: signInError };
-        session = { user: { id: FAKE_UID } };
-        return { data: { session }, error: null };
-      },
     },
     from(table) { return makeBuilder(table, hooks, calls); },
     rpc(name, args) {
@@ -100,6 +100,11 @@ function createApp(overrides = {}) {
       const r = overrides.hooks(table, ops);
       if (r !== undefined) return r;
     }
+    // users 的查询（按身份码 / 按 auth_uid 取自己的那行）返回单行；userRow: null 表示没有绑定行
+    if (table === 'users' && ops.method === 'select') {
+      if (overrides.userRowError) return { data: null, error: overrides.userRowError };
+      return { data: overrides.userRow === undefined ? DEFAULT_USER_ROW : overrides.userRow, error: null };
+    }
     return defaultResult(table, ops);
   };
   const dom = new JSDOM(html, {
@@ -122,7 +127,7 @@ function createApp(overrides = {}) {
   };
 
   let client = null;
-  w.supabase = { createClient: () => (client = makeClient(hooks, overrides.signInError)) };
+  w.supabase = { createClient: () => (client = makeClient(hooks, { session: overrides.session })) };
 
   if (overrides.localStorage) {
     for (const [k, v] of Object.entries(overrides.localStorage)) w.localStorage.setItem(k, v);
@@ -144,50 +149,73 @@ function createApp(overrides = {}) {
 }
 
 // ---- 测试 ----
-async function test0_initFailurePath() {
-  console.log('\n[T0] 匿名登录失败时的错误提示（模拟未开启 Anonymous 登录）');
-  const app = createApp({ signInError: { message: 'anonymous sign-ins are disabled' } });
+async function test0_loggedOut() {
+  console.log('\n[T0] 新浏览器（无会话）→ 未登录，不自动分配身份码');
+  const app = createApp({ session: null });
   const done = await app.waitInit();
   assert(!!done, '初始化流程结束（loading 隐藏）');
-  const list = app.w.document.getElementById('conversationList');
-  assert(list.textContent.includes('匿名登录失败'), `显示"匿名登录失败"提示（实际: "${list.textContent.replace(/\s+/g, ' ').slice(0, 60)}"）`);
-  const upsert = app.client()._calls.find(c => c.table === 'users' && c.method === 'upsert');
-  assert(!upsert, '登录失败后未执行身份码认领');
+  const d = app.w.document;
+  assert(d.getElementById('conversationList').textContent.includes('未登录'), '会话列表显示未登录空状态');
+  assert(d.getElementById('myName').textContent === '未登录', '侧栏昵称显示未登录');
+  assert(d.getElementById('myId').textContent === '------', '身份码占位为 ------');
+  assert(!app.w.localStorage.getItem('webchat_id'), '未登录时不写入任何身份码');
+  assert(app.client()._calls.length === 0,
+    `未登录时不发起任何数据请求（实际 ${app.client()._calls.length} 次）`);
   const claimed = app.client()._calls.find(c => c.table === 'users' && c.method === 'insert');
-  assert(!claimed, '登录失败后未插入身份码行');
+  assert(!claimed, '未登录时不插入身份码行');
+  assert(!d.getElementById('toastContainer').textContent.includes('连接成功'), '未登录时不提示连接成功');
   app.cleanup();
 }
 
 async function test1_initSuccess() {
-  console.log('\n[T1] 完整初始化（登录 → 认领身份码 → 渲染）');
+  console.log('\n[T1] 账号会话初始化（身份码由邮箱派生 → 渲染）');
   const app = createApp();
   const done = await app.waitInit();
   assert(!!done, '初始化在超时前完成');
   const d = app.w.document;
   assert(d.getElementById('conversationList').textContent.includes('还没有会话'), '会话列表渲染空状态');
   const myId = d.getElementById('myId').textContent;
-  assert(/^\d{5}$/.test(myId), `身份码为 5 位数字（实际: ${myId}）`);
+  assert(myId === ACCOUNT_CODE, `身份码来自账号邮箱前缀（实际: ${myId}）`);
   assert(d.getElementById('toastContainer').textContent.includes('连接成功'), '显示"连接成功"');
-  const claim = app.client()._calls.find(c => c.table === 'users' && c.method === 'insert');
-  assert(!!claim, '执行了 users insert 认领');
-  assert(claim && claim.payload.auth_uid === FAKE_UID, '认领时绑定了 auth_uid');
-  assert(claim && claim.payload.id === app.w.localStorage.getItem('webchat_id'), '身份码写入 localStorage 且与渲染一致');
-  assert(app.client()._calls.filter(c => c.method === 'rpc' && c.rpc === 'unbind_identity').length === 1,
-    '认领前先解除本机历史身份残留绑定');
+
+  const sel = app.client()._calls.find(c => c.table === 'users' && c.method === 'select');
+  assert(!!sel, '按身份码读取自己的资料行');
+  assert(sel && sel.filters.some(f => f[0] === 'eq' && f[1] === 'id' && f[2] === ACCOUNT_CODE),
+    '查询条件为 id = 身份码');
+  assert(!app.client()._calls.find(c => c.table === 'users' && c.method === 'insert'),
+    '不再自动插入/认领身份码行');
+  assert(app.client()._calls.filter(c => c.method === 'rpc').length === 0,
+    '账号会话启动时不调用任何 RPC（无需解绑/认领）');
+  assert(app.w.localStorage.getItem('webchat_id') === ACCOUNT_CODE, '身份码写回本地缓存供首屏');
+  assert(app.w.localStorage.getItem('webchat_name') === '用户', '昵称取自资料行');
   assert(app.unhandled.length === 0, `无未捕获异常（${app.unhandled.length}）`);
   app.cleanup();
 }
 
-async function test2_codeCollisionRetry() {
-  console.log('\n[T2] 身份码认领：插入 / 已存在走服务端认领 / 被占用换码');
+async function test2_identityResolution() {
+  console.log('\n[T2] 身份码解析：账号走邮箱 / 匿名会话查绑定行 / 认领本机遗留码');
 
-  // 2a: 该码已存在（23505）→ 服务端 recover_identity 认领成功，不换码、不丢身份
-  const claims = [];
+  // 2a: 匿名会话 + 已绑定行 → 直接用该行，不做任何认领
   const app = createApp({
+    session: LEGACY_SESSION,
+    userRow: { id: '54321', display_name: '老王', avatar_color: '#5B8C5A' },
+  });
+  const done = await app.waitInit();
+  assert(!!done, '初始化完成');
+  const sel = app.client()._calls.find(c => c.table === 'users' && c.method === 'select');
+  assert(sel && sel.filters.some(f => f[0] === 'eq' && f[1] === 'auth_uid' && f[2] === FAKE_UID),
+    '匿名会话按 auth_uid 查绑定行');
+  assert(app.w.document.getElementById('myId').textContent === '54321', '身份码取自绑定行（不再是本机随机码）');
+  assert(app.w.localStorage.getItem('webchat_name') === '老王', '昵称取自绑定行');
+  assert(app.client()._calls.filter(c => c.method === 'rpc').length === 0, '有绑定行时不调用认领函数');
+  app.cleanup();
+
+  // 2b: 匿名会话 + 无绑定行 + 本机还留着身份码 → 服务端认领回来（v1.9.0 兼容路径）
+  const claims = [];
+  const app2 = createApp({
+    session: LEGACY_SESSION,
+    userRow: null,
     hooks: (table, ops) => {
-      if (table === 'users' && ops.method === 'insert') {
-        return { error: { code: '23505', message: 'duplicate key value violates unique constraint "users_pkey"' } };
-      }
       if (ops.method === 'rpc' && ops.rpc === 'recover_identity') {
         claims.push(ops.args);
         return { data: { id: '11111', display_name: '我', avatar_color: '#4A90D9' }, error: null };
@@ -196,56 +224,42 @@ async function test2_codeCollisionRetry() {
     },
     localStorage: { webchat_id: '11111' },
   });
-  const done = await app.waitInit();
-  assert(!!done, '初始化完成');
-  assert(claims.length === 1 && claims[0].p_code === '11111',
-    `已存在的码交给服务端认领（实际 ${claims.length} 次）`);
-  assert(app.w.localStorage.getItem('webchat_id') === '11111', '认领成功不换码（历史身份保住）');
-  const prof = app.client()._calls.find(c => c.table === 'users' && c.method === 'update');
-  assert(!!prof, '认领成功后把本机昵称/头像写回');
-  app.cleanup();
-
-  // 2b: 该码被他人占用（code_unavailable）→ 换一个新码
-  const app2 = createApp({
-    hooks: (table, ops) => {
-      if (table === 'users' && ops.method === 'insert') {
-        if (ops.payload.id === '11111') {
-          return { error: { code: '23505', message: 'duplicate key value violates unique constraint "users_pkey"' } };
-        }
-        return { error: null };
-      }
-      if (ops.method === 'rpc' && ops.rpc === 'recover_identity') {
-        return { data: null, error: { code: 'P0001', message: 'code_unavailable' } };
-      }
-      return undefined;
-    },
-    localStorage: { webchat_id: '11111' },
-  });
   const done2 = await app2.waitInit();
   assert(!!done2, '初始化完成');
-  const newId = app2.w.localStorage.getItem('webchat_id');
-  assert(newId !== '11111' && /^\d{5}$/.test(newId), `该码被占用 → 已换新码（${newId}）`);
-  assert(app2.w.document.getElementById('myId').textContent === newId, '界面同步显示新码');
+  assert(claims.length === 1 && claims[0].p_code === '11111',
+    `本机遗留身份码交给服务端认领（实际 ${claims.length} 次）`);
+  assert(app2.w.document.getElementById('myId').textContent === '11111', '认领成功 → 原身份码保住');
+  assert(app2.w.localStorage.getItem('webchat_id') === '11111', '本地缓存同步为原码');
+  assert(app2.client()._calls.filter(c => c.table === 'users' && c.method === 'insert').length === 0,
+    '不再自动插入新身份码行');
   app2.cleanup();
 
-  // 2c: 服务端函数缺失（还没执行新版 SQL）→ 明确提示，不静默失败
-  const app3 = createApp({
+  // 2c: 匿名会话 + 无绑定行 + 本机没有身份码 → 未登录（不静默换码）
+  const app3 = createApp({ session: LEGACY_SESSION, userRow: null });
+  const done3 = await app3.waitInit();
+  assert(!!done3, '初始化完成');
+  assert(app3.w.document.getElementById('conversationList').textContent.includes('未登录'), '显示未登录空状态');
+  assert(!app3.w.localStorage.getItem('webchat_id'), '未登录时不凭空生成身份码');
+  assert(app3.client()._calls.filter(c => c.method === 'rpc').length === 0, '没有可认领的码时不调用 RPC');
+  app3.cleanup();
+
+  // 2d: 服务端函数缺失（还没执行新版 SQL）→ 明确提示，不静默失败
+  const app4 = createApp({
+    session: LEGACY_SESSION,
+    userRow: null,
     hooks: (table, ops) => {
       if (ops.method === 'rpc' && ops.rpc === 'recover_identity') {
         return { data: null, error: { code: 'PGRST202', message: 'Could not find the function public.recover_identity(p_code)' } };
       }
-      if (table === 'users' && ops.method === 'insert') {
-        return { error: { code: '23505', message: 'duplicate key value violates unique constraint' } };
-      }
       return undefined;
     },
     localStorage: { webchat_id: '11111' },
   });
-  const done3 = await app3.waitInit();
-  assert(!!done3, '初始化结束（loading 隐藏）');
-  const banner = app3.w.document.getElementById('conversationList').textContent;
+  const done4 = await app4.waitInit();
+  assert(!!done4, '初始化结束（loading 隐藏）');
+  const banner = app4.w.document.getElementById('conversationList').textContent;
   assert(banner.includes('supabase-setup.sql'), `提示需先执行 SQL（实际: "${banner.replace(/\s+/g, ' ').trim().slice(0, 60)}"）`);
-  app3.cleanup();
+  app4.cleanup();
 }
 
 async function test3_addContact() {
@@ -581,15 +595,13 @@ async function test8_recoverIdentity() {
     '未知错误：透出 message 与 hint');
   app4.cleanup();
 
-  // 8e: 启动清理 — 历史残留绑定走 unbind_identity(p_keep=当前身份码)，不直接改 users
+  // 8e: 启动阶段不再做任何解绑/认领（账号身份码由邮箱派生，无需腾挪）
   const app5 = createApp();
   await app5.waitInit();
-  const unbinds = app5.client()._calls.filter(c => c.method === 'rpc' && c.rpc === 'unbind_identity');
-  assert(unbinds.length === 1, `启动时调用一次 unbind_identity（实际 ${unbinds.length} 次）`);
-  assert(unbinds[0] && unbinds[0].args && unbinds[0].args.p_keep === app5.w.localStorage.getItem('webchat_id'),
-    '解绑时用 p_keep 保留当前身份码');
+  assert(app5.client()._calls.filter(c => c.method === 'rpc').length === 0,
+    '账号会话启动时不调用任何 RPC');
   assert(app5.client()._calls.filter(c => c.table === 'users' && c.method === 'update').length === 0,
-    '启动清理不再直接 update users');
+    '启动阶段不直接 update users');
   app5.cleanup();
 }
 
@@ -612,9 +624,9 @@ async function test9_maintenanceNotice() {
 
 (async () => {
   try {
-    await test0_initFailurePath();
+    await test0_loggedOut();
     await test1_initSuccess();
-    await test2_codeCollisionRetry();
+    await test2_identityResolution();
     await test3_addContact();
     await test4_xssAvatarColor();
     await test5_notifyPreview();

@@ -75,30 +75,147 @@ function unreadBadgeHtml(convId) {
 }
 
 // ---------- 身份码系统 ----------
+// 身份码不再由本机生成，一律由登录会话派生：
+//   账号用户（身份码+密码）：身份码 = 邮箱前缀 <身份码>@xvcangcang.github.io
+//   匿名会话（过渡期老用户）：身份码 = users 表里 auth_uid = 自己 的那一行
+// 这样彻底消灭「身份码被自动换掉、好友与聊天记录对不上」这一类问题。
+const ACCOUNT_EMAIL_DOMAIN = '@xvcangcang.github.io';
+const AUTH_NONE = 'none';        // 无会话 → 未登录
+const AUTH_LEGACY = 'legacy';    // 匿名会话（老用户，过渡期）
+const AUTH_ACCOUNT = 'account';  // 账号会话（身份码 + 密码）
+
+function emailForCode(code) { return `${code}${ACCOUNT_EMAIL_DOMAIN}`; }
+
+function codeFromEmail(email) {
+  const e = String(email || '').trim().toLowerCase();
+  if (!e.endsWith(ACCOUNT_EMAIL_DOMAIN)) return null;
+  const code = e.slice(0, -ACCOUNT_EMAIL_DOMAIN.length);
+  return /^\d{5,6}$/.test(code) ? code : null;
+}
+
+// 只读本地缓存（昵称/头像）做首屏渲染。身份码不在本地缓存里，必须等会话。
 async function initIdentity() {
-  let id = localStorage.getItem('webchat_id');
   let name = localStorage.getItem('webchat_name');
   let color = localStorage.getItem('webchat_color');
 
-  // 身份码只接受 5/6 位数字，格式异常（含旧 UUID）则重新生成
-  if (id && !/^\d{5,6}$/.test(id)) { id = null; localStorage.removeItem('webchat_id'); }
   // 头像颜色只接受 #RRGGBB，防止本地篡改注入到 style 属性
   if (color && !/^#[0-9A-Fa-f]{6}$/.test(color)) { color = null; localStorage.removeItem('webchat_color'); }
-
   if (!name) { name = '用户'; localStorage.setItem('webchat_name', name); }
   if (!color) { color = randomColor(); localStorage.setItem('webchat_color', color); }
 
   state.myName = name;
   state.myColor = color;
-
-  // 生成 5 位身份码（占用冲突由 ensureIdentity 换码重试兜底）
-  if (!id) {
-    id = genShortId();
-    localStorage.setItem('webchat_id', id);
-  }
-  state.myId = id;
+  state.myId = null;   // 由 resolveSession() + loadIdentity() 赋值
 
   applyTheme();
+}
+
+// 当前会话属于哪种状态（不触碰数据库）
+async function resolveSession() {
+  const { data } = await state.supabase.auth.getSession();
+  const session = data && data.session;
+  if (!session || !session.user) return { state: AUTH_NONE };
+
+  const code = codeFromEmail(session.user.email);
+  return {
+    state: code ? AUTH_ACCOUNT : AUTH_LEGACY,
+    uid: session.user.id,
+    email: session.user.email || null,
+    code,
+  };
+}
+
+// 把某一行 users 认作自己的身份，并写回本地缓存（供下次首屏）
+function adoptIdentity(row) {
+  state.myId = row.id;
+  if (row.display_name) state.myName = row.display_name;
+  if (/^#[0-9A-Fa-f]{6}$/.test(row.avatar_color || '')) state.myColor = row.avatar_color;
+  localStorage.setItem('webchat_id', state.myId);
+  localStorage.setItem('webchat_name', state.myName);
+  localStorage.setItem('webchat_color', state.myColor);
+  renderMyInfo();
+}
+
+// 由会话把身份取回来。返回 false = 有会话但没有对应身份码 → 按未登录处理
+async function loadIdentity(auth) {
+  if (auth.state === AUTH_ACCOUNT) {
+    // 账号：身份码由邮箱决定，行必须已存在（注册流程建立）
+    const { data, error } = await state.supabase
+      .from('users')
+      .select('id, display_name, avatar_color')
+      .eq('id', auth.code)
+      .maybeSingle();
+    if (error) throw new Error(`读取身份失败：${error.message || error.code}`);
+    if (data && data.id) { adoptIdentity(data); return true; }
+
+    // 行丢失（异常情况）→ 补建一次
+    const ins = await state.supabase.from('users').insert({
+      id: auth.code,
+      display_name: state.myName,
+      avatar_color: state.myColor,
+      last_seen: new Date().toISOString(),
+      auth_uid: auth.uid,
+    });
+    if (ins.error) throw new Error(`账号数据缺失且无法补建（${ins.error.code || '未知错误'}）`);
+    state.myId = auth.code;
+    localStorage.setItem('webchat_id', state.myId);
+    renderMyInfo();
+    return true;
+  }
+
+  // 匿名会话（老用户）：身份码 = 绑定了本会话的那一行（auth_uid 唯一，至多一行）
+  const { data, error } = await state.supabase
+    .from('users')
+    .select('id, display_name, avatar_color')
+    .eq('auth_uid', auth.uid)
+    .maybeSingle();
+  if (error) throw new Error(`读取身份失败：${error.message || error.code}`);
+  if (data && data.id) { adoptIdentity(data); return true; }
+
+  // 会话在但没有任何行绑定它：本机若还留着身份码，认领回来（v1.9.0 兼容路径）
+  // 只有「本来就有会话」的浏览器会走到这里；新浏览器没有会话，因此不会被自动分配身份码
+  const cached = localStorage.getItem('webchat_id');
+  if (/^\d{5,6}$/.test(cached || '')) {
+    const claim = await state.supabase.rpc('recover_identity', { p_code: cached });
+    if (!claim.error) {
+      const row = claim.data || {};
+      adoptIdentity({
+        id: row.id || cached,
+        display_name: row.display_name,
+        avatar_color: row.avatar_color,
+      });
+      return true;
+    }
+    const msg = String(claim.error.message || '');
+    if (/PGRST202|42883|does not exist/i.test(`${claim.error.code} ${msg}`)) {
+      throw new Error('服务端缺少身份函数，请先在 Supabase 执行最新的 supabase-setup.sql');
+    }
+    console.warn('认领本机身份码失败（可忽略）:', claim.error);
+  }
+  return false;
+}
+
+// 未登录首屏：没有身份码就不加载任何数据
+function renderLoggedOut(hint) {
+  state.myId = null;
+  $('myAvatar').textContent = '?';
+  $('myAvatar').style.background = 'var(--muted-foreground, #bbb)';
+  $('myName').textContent = '未登录';
+  $('myId').textContent = '------';
+  $('myId').title = '';
+  const actions = document.querySelector('.sidebar-actions');
+  if (actions) actions.style.display = 'none';
+  $('conversationList').innerHTML = `<div class="empty-state">
+    <p>未登录</p>
+    <p class="hint">${escapeHtml(hint || '注册或登录后开始聊天')}</p>
+  </div>`;
+}
+
+function hideLoadingScreen() {
+  const ls = $('loadingScreen');
+  if (!ls) return;
+  ls.classList.add('hidden');
+  setTimeout(() => { if (ls.parentNode) ls.remove(); }, 500);
 }
 
 // ---------- 主题系统 ----------
@@ -144,88 +261,11 @@ function applyTheme() {
   document.documentElement.setAttribute('data-theme', theme);
 }
 
-// ---------- Supabase 初始化：匿名登录 + 身份码认领 ----------
-async function ensureAuth() {
-  // 已有会话则复用（保证 auth.uid 稳定，身份码绑定不失效）
-  const { data: { session } } = await state.supabase.auth.getSession();
-  if (session) return session;
-
-  const { data, error } = await state.supabase.auth.signInAnonymously();
-  if (error) {
-    console.error('Anonymous sign-in error:', error);
-    throw new Error('匿名登录失败，请在 Supabase 控制台开启 Anonymous 登录');
-  }
-  return data.session;
-}
-
-async function ensureIdentity() {
-  const { data: { session } } = await state.supabase.auth.getSession();
-  const uid = session?.user?.id;
-  if (!uid) throw new Error('未获得登录会话');
-
-  // 解绑本浏览器历史身份残留的 auth_uid（换码后旧码归还未认领）
-  // 走服务端函数：把 auth_uid 置空的行在 RLS 下"自己看不见自己"，前端直接 update 会被拒 42501
-  // 尽力而为：函数缺失（还没跑新版 SQL）时不阻断后面的认领
-  const unbind = await state.supabase.rpc('unbind_identity', { p_keep: state.myId });
-  if (unbind && unbind.error) console.warn('unbind_identity 失败（可忽略）:', unbind.error);
-
-  // 认领身份码，三步走：
-  //   1) 该码还没人用 → INSERT 新建（INSERT 策略要求 auth_uid = 自己）
-  //   2) 该码已存在 → 服务端函数 recover_identity 认领：自己上次绑的行、或未被认领的
-  //      历史行都能拿回来；被别人占着则报 code_unavailable
-  //   3) 拿不回来 → 换一个码重试
-  // 不用 upsert：ON CONFLICT DO UPDATE 要求冲突行对自己可见，而别人的行/未认领的行
-  // 在 users_select 下都不可见，会被 RLS 挡下且错误码不可预期
-  for (let i = 0; i < 20; i++) {
-    const row = {
-      id: state.myId,
-      display_name: state.myName,
-      avatar_color: state.myColor,
-      last_seen: new Date().toISOString(),
-      auth_uid: uid,
-    };
-
-    let { error } = await state.supabase.from('users').insert(row);
-
-    if (error && error.code === '23505') {
-      const claim = await state.supabase.rpc('recover_identity', { p_code: state.myId });
-      if (!claim.error) {
-        // 认领成功：行已属于自己，把本机资料写回（昵称/头像以本机为准）
-        await state.supabase.from('users')
-          .update({
-            display_name: row.display_name,
-            avatar_color: row.avatar_color,
-            last_seen: row.last_seen,
-          })
-          .eq('id', state.myId);
-        return;
-      }
-      error = claim.error;
-    }
-
-    if (!error) return;
-
-    const msg = String(error.message || '');
-    if (msg.includes('code_unavailable') || error.code === '42501' || error.code === '23505') {
-      // 该码已被别人绑定（或 RLS 拒绝）→ 换一个码重试
-    } else if (/PGRST202|42883|does not exist/i.test(`${error.code} ${msg}`)) {
-      console.error('Claim identity error:', error);
-      throw new Error('服务端缺少身份函数，请先在 Supabase 执行最新的 supabase-setup.sql');
-    } else {
-      console.error('Claim identity error:', error);
-      throw new Error(`认领身份码失败（${error.code || '未知错误'}）：${msg.slice(0, 120)}`);
-    }
-    state.myId = genShortId();
-    localStorage.setItem('webchat_id', state.myId);
-    renderMyInfo();
-  }
-  throw new Error('无法分配身份码，请刷新重试');
-}
-
-// 找回身份：输入原身份码 → 解绑当前身份 → 认领原身份 → 刷新页面
-// 场景：换浏览器/清数据/密钥轮换导致被自动换码，原身份的好友与聊天记录还在原码下
+// 找回身份（过渡期，老用户专用）：输入原身份码 → 解绑当前绑定 → 认领原身份 → 刷新页面
+// 场景：老用户换浏览器/清数据后匿名会话换了新 uid，原身份的好友与聊天记录还在原码下
 // 解绑与认领由服务端函数 recover_identity 原子完成：前端直接 update 会被 RLS 拒绝
 // （解绑后的新行 auth_uid 为 NULL，不满足 users_select 的 USING → 42501）
+// 账号用户不需要它——身份码由邮箱决定，登录即回到原身份
 async function recoverIdentity(oldCode) {
   oldCode = (oldCode || '').trim();
   if (!/^\d{5,6}$/.test(oldCode)) return { error: '身份码格式不正确' };
@@ -980,11 +1020,12 @@ function broadcastMessage() {}
 
 // ---------- UI 渲染 ----------
 function renderMyInfo() {
-  $('myAvatar').textContent = getInitial(state.myName);
-  $('myAvatar').style.background = state.myColor;
-  $('myName').textContent = state.myName;
-  $('myId').textContent = state.myId;
-  $('myId').title = '点击复制: ' + state.myId;
+  const loggedIn = !!state.myId;
+  $('myAvatar').textContent = loggedIn ? getInitial(state.myName) : '?';
+  $('myAvatar').style.background = loggedIn ? state.myColor : 'var(--muted-foreground, #bbb)';
+  $('myName').textContent = loggedIn ? state.myName : '未登录';
+  $('myId').textContent = loggedIn ? state.myId : '------';
+  $('myId').title = loggedIn ? '点击复制: ' + state.myId : '';
   // 显示版本号
   if (typeof APP_VERSION !== 'undefined') {
     $('appVersion').textContent = 'WebChat ' + APP_VERSION;
@@ -1343,6 +1384,7 @@ function renderChatInfo() {
 function bindEvents() {
   // 复制身份码
   $('myId').addEventListener('click', () => {
+    if (!state.myId) return;
     navigator.clipboard.writeText(state.myId).then(() => toast('身份码已复制', 'success'));
   });
 
@@ -1516,6 +1558,7 @@ function bindEvents() {
   });
 
   $('btnCopyId').addEventListener('click', () => {
+    if (!state.myId) return;
     navigator.clipboard.writeText(state.myId).then(() => toast('身份码已复制', 'success'));
   });
 
@@ -1824,29 +1867,40 @@ async function init() {
   await initIdentity();
   renderMyInfo();
 
+  // 身份码一律由会话派生：没有会话（新浏览器）就是未登录，不再自动分配
+  let auth = null;
+  let hasIdentity = false;
   try {
-    await ensureAuth();
-    await ensureIdentity();
-    startHeartbeat();
+    auth = await resolveSession();
+    if (auth.state !== AUTH_NONE) hasIdentity = await loadIdentity(auth);
   } catch (e) {
     console.error(e);
     $('conversationList').innerHTML = `<div class="empty-state">
       <p style="color:#fa5151">⚠️ ${escapeHtml(e.message) || '连接失败'}</p>
       <p class="hint">请检查 config.js 与控制台登录配置</p>
     </div>`;
-    $('loadingScreen').classList.add('hidden');
+    hideLoadingScreen();
     return;
   }
 
+  if (!hasIdentity) {
+    // 未登录：不加载任何数据，只渲染空状态
+    renderLoggedOut(auth && auth.state === AUTH_LEGACY
+      ? '登录会话已失效，请注册账号或用原身份码找回'
+      : '注册或登录后开始聊天');
+    bindEvents();
+    hideLoadingScreen();
+    return;
+  }
+
+  startHeartbeat();
   await loadContacts();
   await loadConversations();
   renderConversationList();
   subscribeRealtime();
   bindEvents();
 
-  // 隐藏加载动画
-  $('loadingScreen').classList.add('hidden');
-  setTimeout(() => $('loadingScreen').remove(), 500);
+  hideLoadingScreen();
 
   toast('连接成功');
 
