@@ -13,7 +13,7 @@ const DEFAULT_USER_ROW = { id: ACCOUNT_CODE, display_name: '用户', avatar_colo
 
 const html = fs.readFileSync(path.join(ROOT, 'index.html'), 'utf8')
   .replace(/<script src="https:\/\/cdn\.jsdelivr[^>]+><\/script>/, '');
-// config.js 被 .gitignore 忽略，新克隆仓库时回退到模板（测试用假客户端，配置值无实际影响）
+// config.js 已入库；缺失时（如尚未创建）回退到模板（测试用假客户端，配置值无实际影响）
 const configSrc = fs.existsSync(path.join(ROOT, 'config.js')) ? 'config.js' : 'config.example.js';
 const sources = [configSrc, 'version.js', 'changelog.js', 'app.js']
   .map(f => fs.readFileSync(path.join(ROOT, f), 'utf8')).join('\n;\n');
