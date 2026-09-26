@@ -1816,7 +1816,7 @@ function bindEvents() {
 
     if (cfg.code && !code) return fail('请输入身份码');
     if (!pwd) return fail('请输入密码');
-    if (cfg.confirm && cfg.code && !pwd2) return fail('请再输入一次密码');
+    if (cfg.confirm && !pwd2) return fail('请再输入一次密码');
     if (cfg.confirm && pwd !== pwd2) return fail('两次输入的密码不一致');
 
     const btn = $('btnAuthSubmit');
