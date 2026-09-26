@@ -364,3 +364,79 @@ REVOKE ALL ON FUNCTION unbind_identity(text) FROM PUBLIC;
 REVOKE ALL ON FUNCTION recover_identity(text) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION unbind_identity(text) TO authenticated, service_role;
 GRANT EXECUTE ON FUNCTION recover_identity(text) TO authenticated, service_role;
+
+-- === 10. 安全加固（2026-09-26 静态审查后追加） ===
+-- 本节全部幂等，可直接在老库上重复执行。
+
+-- (1) users_update 补 id 格式校验【重要】
+-- 原策略只校验 auth_uid，与 users_insert 的 `id ~ '^[0-9]{5,6}$'` 不对称，
+-- 于是 id 可被改成任意字符串。而 users.id 会流进两个危险位置：
+--   ① 前端 HTML：「新的朋友」列表把对方身份码直接插值且未转义 → 存储型 XSS
+--      （配合 events 可窃取 localStorage 里的会话 token → 账号被完全接管）
+--   ② PostgREST 过滤串：.or(`user_id.eq.${myId},contact_id.eq.${myId}`) → 过滤条件注入
+-- 这里补上对称的另一半。
+DROP POLICY IF EXISTS "users_update" ON users;
+CREATE POLICY "users_update" ON users FOR UPDATE TO authenticated
+  USING (auth_uid = auth.uid())
+  WITH CHECK (auth_uid = auth.uid() AND id ~ '^[0-9]{5,6}$');
+
+-- 关于 USING 里去掉的 `OR auth_uid IS NULL`：
+-- 该分支允许任何登录用户改写「尚未被认领」的行，是绕过 users_select 防枚举设计的第二条路
+-- （第一条是 recover_identity 函数，见 §11 待决项）。
+-- 前端没有任何一处需要更新未绑定行 —— 认领身份一律走 SECURITY DEFINER 的 recover_identity，
+-- 新建身份走 users_insert，因此收紧后功能不受影响。
+
+-- (2) 清理并约束 role / msg_type 取值
+-- 只修正「非 NULL 且非法」的值。CHECK 对 NULL 判为通过（NULL IN (...) 结果是 NULL），
+-- 故历史行里的 NULL 角色保持原样 —— 避免把某个群唯一的 owner 降级成 member 导致无人可管理。
+UPDATE conversation_members SET role = 'member'
+WHERE role IS NOT NULL AND role NOT IN ('member', 'admin', 'owner');
+
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'members_role_check') THEN
+    ALTER TABLE conversation_members ADD CONSTRAINT members_role_check
+      CHECK (role IN ('member', 'admin', 'owner'));
+  END IF;
+END $$;
+
+UPDATE messages SET msg_type = 'text'
+WHERE msg_type IS NOT NULL AND msg_type NOT IN ('text', 'system');
+
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'messages_msg_type_check') THEN
+    ALTER TABLE messages ADD CONSTRAINT messages_msg_type_check
+      CHECK (msg_type IN ('text', 'system'));
+  END IF;
+END $$;
+
+-- (3) members_insert：邀请他人时只能给 member
+-- 原策略对写入的 role 完全不设限，任意群成员可把自己的好友直接以 owner 身份拉进群，
+-- 绕过了 members_update（那个策略本身是正确的，仅群主可用）。
+-- 创建者写自己的 role='owner' 走的是 user_id = me() 分支，不受影响；
+-- 客户端邀请他人时本就显式传 role='member'（app.js 的 createDirect/createGroup），故功能不变。
+DROP POLICY IF EXISTS "members_insert" ON conversation_members;
+CREATE POLICY "members_insert" ON conversation_members FOR INSERT TO authenticated
+  WITH CHECK (
+    (user_id = me() AND (
+      is_member(conversation_id)
+      OR EXISTS (SELECT 1 FROM conversations c WHERE c.id = conversation_id AND c.created_by = me())
+    ))
+    OR (
+      user_id <> me()
+      AND role = 'member'
+      AND is_member(conversation_id)
+      AND EXISTS (
+        SELECT 1 FROM contacts c
+        WHERE c.status = 'accepted'
+          AND ((c.user_id = me()    AND c.contact_id = conversation_members.user_id)
+            OR (c.contact_id = me() AND c.user_id    = conversation_members.user_id))
+      )
+    )
+  );
+
+-- (4) messages(sender_id) 索引
+-- idx_messages_conv 是 (conversation_id, created_at DESC)，不覆盖 sender_id。
+-- 撤回、删号清理、以及 messages.sender_id 的外键检查都按 sender_id 过滤，此前均为顺序扫描。
+CREATE INDEX IF NOT EXISTS idx_messages_sender ON messages(sender_id);
