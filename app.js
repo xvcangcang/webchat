@@ -2213,6 +2213,10 @@ async function init() {
     return;
   }
 
+  // 供 renderAccountBox 判断账号区该显示哪组按钮：未登录分支也必须存，
+  // 否则新浏览器打开设置会误判成「过渡期匿名用户」
+  state.auth = auth;
+
   if (!hasIdentity) {
     // 未登录：不加载任何数据，只渲染空状态
     renderLoggedOut(auth && auth.state === AUTH_LEGACY
@@ -2233,6 +2237,12 @@ async function init() {
   hideLoadingScreen();
 
   toast('连接成功');
+
+  // 过渡期老用户：只提示一次，不强制。设密码后换设备/清缓存也能回到这个身份
+  if (auth.state === AUTH_LEGACY && !localStorage.getItem('webchat_upgrade_hint')) {
+    localStorage.setItem('webchat_upgrade_hint', '1');
+    setTimeout(() => toast('建议在「设置 → 账号」里设置密码，换设备也能登录'), 2500);
+  }
 
   // 请求通知权限
   notify.requestPermission();
