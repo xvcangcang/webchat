@@ -594,18 +594,19 @@ async function test8_recoverIdentity() {
 }
 
 async function test9_maintenanceNotice() {
-  console.log('\n[T9] 维护通知弹窗：打开网站即显示，可点击关闭');
+  console.log('\n[T9] 维护通知弹窗：MAINTENANCE_NOTICE 为 false 时不打扰用户');
   const app = createApp();
   const doc = app.w.document;
   const modal = doc.getElementById('modalMaintenance');
-  assert(!!modal, '维护通知弹窗存在于页面');
-  assert(modal.style.display === 'flex', '初始化时弹窗已显示（先于 init 打开）');
+  assert(!!modal, '维护通知弹窗仍保留在页面（下次维护可直接开关）');
+  const flag = /const MAINTENANCE_NOTICE = (true|false)/.exec(sources);
+  assert(flag && flag[1] === 'false', '维护开关在 version.js 中已关闭');
+  assert(modal.style.display !== 'flex', '恢复正常使用后不再弹出维护通知');
   const btn = doc.getElementById('btnMaintenanceClose');
   assert(!!btn, '关闭按钮存在');
   btn.click();
-  assert(modal.style.display === 'none', '点击「我知道了」后弹窗关闭');
   await app.waitInit();
-  assert(modal.style.display === 'none', '初始化完成后弹窗不会重新弹出');
+  assert(modal.style.display === 'none', '初始化后弹窗保持关闭');
   app.cleanup();
 }
 
