@@ -514,6 +514,38 @@ async function test8_recoverIdentity() {
     rec3[2].filters.some(f => f[1] === 'auth_uid' && f[2] === null),
     '回滚：重新绑定当前身份');
   app3.cleanup();
+
+  // 8d: 解绑失败时透出错误码、服务端详情与实际请求参数（定位 42501 用）
+  const app4 = createApp({
+    hooks: (table, ops) => {
+      if (table === 'users' && ops.method === 'update' &&
+          ops.payload && ops.payload.auth_uid === null &&
+          ops.filters.some(f => f[1] === 'id')) {
+        return {
+          data: null,
+          error: {
+            code: '42501',
+            message: 'new row violates row-level security policy for table "users"',
+            details: 'Failing row has id = 99999',
+            hint: 'See policy documentation',
+          },
+        };
+      }
+      return undefined;
+    },
+  });
+  await app4.waitInit();
+  const curId4 = app4.w.localStorage.getItem('webchat_id');
+  const r4 = await app4.w.recoverIdentity('88888');
+  assert(r4 && r4.error && r4.error.startsWith('解绑当前身份失败（42501）'),
+    '解绑失败：错误信息开头带服务端错误码');
+  assert(r4.error.includes('new row violates row-level security policy') &&
+    r4.error.includes('Failing row has id = 99999') &&
+    r4.error.includes('See policy documentation'),
+    '解绑失败：透出 message / details / hint 全部服务端字段');
+  assert(r4.error.includes(`参数 id=${curId4} uid=${FAKE_UID}`),
+    '解绑失败：附带实际请求参数 id 与 uid');
+  app4.cleanup();
 }
 
 async function test9_maintenanceNotice() {

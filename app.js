@@ -216,9 +216,15 @@ async function recoverIdentity(oldCode) {
     .eq('id', state.myId)
     .eq('auth_uid', uid);
   if (unbindErr) {
-    console.error('找回身份：解绑当前身份失败', unbindErr);
-    const detail = String(unbindErr.message || '').slice(0, 160);
-    return { error: `解绑当前身份失败（${unbindErr.code || '未知错误'}）：${detail || '无详细信息，请刷新后重试'}` };
+    console.error('找回身份：解绑当前身份失败', { myId: state.myId, uid, error: unbindErr });
+    // 透出 message/details/hint 与实际请求参数，便于直接对照服务端日志定位
+    const bits = [
+      String(unbindErr.message || '').slice(0, 160) || '无详细信息，请刷新后重试',
+      ...[unbindErr.details, unbindErr.hint]
+        .filter(v => v != null && String(v).trim() !== '')
+        .map(v => String(v).slice(0, 160)),
+    ];
+    return { error: `解绑当前身份失败（${unbindErr.code || '未知错误'}）：${bits.join(' ｜ ')} ｜参数 id=${state.myId} uid=${uid}` };
   }
 
   // 2) 认领原身份：行存在且未被占用（批量解绑 SQL 已执行）才匹配到；
