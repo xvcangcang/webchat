@@ -20,7 +20,7 @@
 | Phase 3 测试 | ✅ **完成** `b6685a0`：`npm test` → **160 通过 / 0 失败**（账号流程已全覆盖） |
 | Phase 4 文档发版 | ✅ **完成** `505c634`：README 重写、`changelog.js` + `version.js` → **v2.0.0** |
 | Phase 5 收尾（关匿名登录、删过渡代码） | ⬜ 未开始（计划观察一两周后做，见 §10） |
-| 线上站点 | 随本次推送更新为 **v2.0.0**（账号登录版） |
+| 线上站点 | 已更新为 **v2.1.0**（账号登录版 + 使用指南），见 §15 |
 
 **执行结果**：Phase 2 的 UI 与绑定已按 §7.2 清单补完，测试与文档同步跟上，**一次性推送 Phase 1–4**，
 因此线上不会出现「未登录 + 点了没反应的按钮」的中间态（原计划的推送风险已消除）。
@@ -437,3 +437,37 @@ curl -s -H "Authorization: Bearer $TOKEN" "$BASE/contents/HANDOFF.md?ref=handoff
 改多个文件时逐文件重复第 3 步（每次 PUT 都会在该分支上生成一个提交）。
 `git fetch` / `git ls-remote` 同样会失败（都要连 `github.com`），所以**本地看不到远端状态**，
 只能靠上面的 API 查询确认。真正的 `git push` 等网络恢复后再做（或用户挂代理手动推）。
+
+---
+
+## 15. 追加：使用指南（v2.1.0，2026-09-26）
+
+改造完成后用户提出的新需求：**新用户看不懂「身份码 + 密码」这套用法** ⇒ 加一个首次访问自动弹出的使用指南。
+
+### 实现要点
+
+| 项 | 位置 |
+|---|---|
+| 弹窗 | `index.html` 的 `#modalGuide`（放在 `#modalMaintenance` 之后） |
+| 样式 | `style.css` 的 `/* ======== 使用指南 ======== */` 段 |
+| 逻辑 | `app.js`：`GUIDE_HIDDEN_KEY` / `openGuide()` / `maybeShowGuide()`（在 `openAuthModal` 之后） |
+| 唤起 | `init()` 的两个出口各调一次 `maybeShowGuide()`（未登录分支 + 正常分支） |
+| 偏好 | `localStorage.webchat_guide_hidden === '1'` ⇒ 不再自动弹出 |
+| 手动入口 | 设置 → 关于 → `#btnShowGuide` → `closeModal('modalSettings')` + `openGuide()` |
+| 测试 | `test/frontend.test.js` 的 T11（21 条断言），`npm test` → **181 通过 / 0 失败** |
+
+### 三个刻意的设计选择（别改错）
+
+1. **勾选框在 `change` 时就写 localStorage**，不等关闭弹窗。
+   否则用户勾了「不再自动弹出」却点背景/叉号关掉，这个勾就白勾了 —— 下次还弹，最招人烦。
+2. **`#modalGuide { z-index: 10000; }` 必须保留**。
+   `.loading-screen` 是 `z-index: 9999`，且 `hideLoadingScreen()` 只加 `.hidden`（`visibility` 有 0.4s 过渡），
+   指南在 `hideLoadingScreen()` 之后立即打开 —— 层级不够就会被那张渐隐的白屏压住开场 400ms。
+   T11 有一条断言直接检查这条 CSS，就是防这个回归。
+3. **`.modal-guide` 用 flex 列布局 + `max-height: 85vh`，正文 `overflow-y: auto`**。
+   `.modal` 默认没有限高，六步指南在手机上会撑出屏幕且无法滚动。
+
+### 与 Phase 5 的关系
+
+指南是纯前端、无副作用的功能，**不影响 Phase 5 的收尾计划**（关匿名登录、删过渡代码）。
+但 Phase 5 删掉「找回身份」时，**记得同步改 `#modalGuide` 里第 6 条**（现在写着「设置 → 找回身份 可用原身份码找回」）。
