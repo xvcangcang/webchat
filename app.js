@@ -164,11 +164,9 @@ async function ensureIdentity() {
   if (!uid) throw new Error('未获得登录会话');
 
   // 解绑本浏览器历史身份残留的 auth_uid（换码后旧码归还未认领）
-  await state.supabase
-    .from('users')
-    .update({ auth_uid: null })
-    .neq('id', state.myId)
-    .eq('auth_uid', uid);
+  // 走服务端函数：把 auth_uid 置空的行在 RLS 下"自己看不见自己"，前端直接 update 会被拒 42501
+  // 尽力而为，失败不阻断后面的认领（函数缺失时行为与旧版一致）
+  await state.supabase.rpc('unbind_identity', { p_keep: state.myId });
 
   // upsert 认领身份码；码被他人占用则换一个重试
   for (let i = 0; i < 20; i++) {
@@ -199,6 +197,8 @@ async function ensureIdentity() {
 
 // 找回身份：输入原身份码 → 解绑当前身份 → 认领原身份 → 刷新页面
 // 场景：换浏览器/清数据/密钥轮换导致被自动换码，原身份的好友与聊天记录还在原码下
+// 解绑与认领由服务端函数 recover_identity 原子完成：前端直接 update 会被 RLS 拒绝
+// （解绑后的新行 auth_uid 为 NULL，不满足 users_select 的 USING → 42501）
 async function recoverIdentity(oldCode) {
   oldCode = (oldCode || '').trim();
   if (!/^\d{5,6}$/.test(oldCode)) return { error: '身份码格式不正确' };
@@ -209,46 +209,28 @@ async function recoverIdentity(oldCode) {
   const uid = session?.user?.id;
   if (!uid) return { error: '未获得登录会话，请刷新重试' };
 
-  // 1) 解绑当前身份（auth_uid 唯一，先腾出绑定才能认领原身份）
-  const { error: unbindErr } = await state.supabase
-    .from('users')
-    .update({ auth_uid: null })
-    .eq('id', state.myId)
-    .eq('auth_uid', uid);
-  if (unbindErr) {
-    console.error('找回身份：解绑当前身份失败', { myId: state.myId, uid, error: unbindErr });
-    // 透出 message/details/hint 与实际请求参数，便于直接对照服务端日志定位
-    const bits = [
-      String(unbindErr.message || '').slice(0, 160) || '无详细信息，请刷新后重试',
-      ...[unbindErr.details, unbindErr.hint]
-        .filter(v => v != null && String(v).trim() !== '')
-        .map(v => String(v).slice(0, 160)),
-    ];
-    return { error: `解绑当前身份失败（${unbindErr.code || '未知错误'}）：${bits.join(' ｜ ')} ｜参数 id=${state.myId} uid=${uid}` };
-  }
-
-  // 2) 认领原身份：行存在且未被占用（批量解绑 SQL 已执行）才匹配到；
-  //    只改 auth_uid/last_seen，昵称与头像色从返回值读回以恢复原资料
+  // 服务端一个事务内：腾出当前绑定 + 认领原身份（任一步失败整体回滚，不留半个状态）
   const { data, error } = await state.supabase
-    .from('users')
-    .update({ auth_uid: uid, last_seen: new Date().toISOString() })
-    .eq('id', oldCode)
-    .eq('auth_uid', null)
-    .select('id, display_name, avatar_color');
+    .rpc('recover_identity', { p_code: oldCode });
 
-  if (error || !data || data.length === 0) {
-    if (error) console.error('找回身份：认领原身份失败', error);
-    // 原身份码不可用 → 回滚当前身份的绑定（若回滚也失败，刷新时 ensureIdentity 会重新认领）
-    await state.supabase
-      .from('users')
-      .update({ auth_uid: uid })
-      .eq('id', state.myId)
-      .eq('auth_uid', null);
-    return { error: '该身份码不存在或仍被占用，请确认后重试' };
+  if (error) {
+    console.error('找回身份失败', { myId: state.myId, uid, code: oldCode, error });
+    const msg = String(error.message || '');
+    if (msg.includes('code_unavailable')) {
+      return { error: '该身份码不存在或仍被占用，请确认后重试' };
+    }
+    if (msg.includes('not_authenticated')) {
+      return { error: '未获得登录会话，请刷新重试' };
+    }
+    // 其它错误（如函数未创建）透出服务端 message/details/hint，便于定位
+    const bits = [msg, error.details, error.hint]
+      .filter(v => v != null && String(v).trim() !== '')
+      .map(v => String(v).slice(0, 160));
+    return { error: `找回失败（${error.code || '未知错误'}）：${bits.join(' ｜ ') || '无详细信息，请刷新后重试'}` };
   }
 
-  // 3) 恢复原身份资料，切换身份码后刷新页面，以原身份重新加载好友与会话
-  const row = data[0];
+  // 恢复原身份资料，切换身份码后刷新页面，以原身份重新加载好友与会话
+  const row = data || {};
   if (row.display_name) {
     localStorage.setItem('webchat_name', row.display_name);
     state.myName = row.display_name;

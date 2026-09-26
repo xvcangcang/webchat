@@ -71,6 +71,18 @@ function makeClient(hooks, signInError) {
       },
     },
     from(table) { return makeBuilder(table, hooks, calls); },
+    rpc(name, args) {
+      const ops = { method: 'rpc', table: 'rpc', rpc: name, args };
+      return {
+        then(onFulfilled, onRejected) {
+          calls.push(ops);
+          let result;
+          try { result = hooks(ops.table, ops); }
+          catch (e) { result = Promise.reject(e); }
+          return Promise.resolve(result).then(onFulfilled, onRejected);
+        },
+      };
+    },
     removeChannel() {},
     _calls: calls,
   };
@@ -436,31 +448,28 @@ async function test5_notifyPreview() {
 }
 
 async function test8_recoverIdentity() {
-  console.log('\n[T8] recoverIdentity：找回原身份（解绑当前 → 认领原码 → 切换刷新）');
+  console.log('\n[T8] recoverIdentity：找回原身份（服务端解绑+认领 → 切换刷新）');
 
   // 8a: 格式/同码校验在本地拦截，不触碰数据库
   const app = createApp();
   await app.waitInit();
-  const userUpdates = () => app.client()._calls.filter(c => c.table === 'users' && c.method === 'update').length;
-  const n0 = userUpdates();
+  const rpcCalls = () => app.client()._calls.filter(c => c.method === 'rpc').length;
+  const n0 = rpcCalls();
   let res = await app.w.recoverIdentity('abc');
   assert(res && res.error === '身份码格式不正确', '非数字身份码被本地拦截');
   const curId = app.w.localStorage.getItem('webchat_id');
   res = await app.w.recoverIdentity(curId);
   assert(res && res.error === '当前身份码就是它，无需找回', '输入当前码提示无需找回');
-  assert(userUpdates() === n0, '校验失败时未执行任何数据库更新');
+  assert(rpcCalls() === n0, '校验失败时未调用服务端函数');
   app.cleanup();
 
-  // 8b: 成功路径 — 解绑当前身份 → 认领原码（未被占用）→ 恢复原资料并切换
-  const updates = [];
+  // 8b: 成功路径 — 一次 RPC 完成解绑+认领，返回原资料后切换刷新
+  const rpcArgs = [];
   const app2 = createApp({
     hooks: (table, ops) => {
-      if (table === 'users' && ops.method === 'update') {
-        updates.push({ payload: ops.payload, filters: ops.filters });
-        if (ops.filters.some(f => f[0] === 'eq' && f[1] === 'id' && f[2] === '88888')) {
-          return { data: [{ id: '88888', display_name: '老昵称', avatar_color: '#5B8C5A' }], error: null };
-        }
-        return { data: [], error: null };
+      if (ops.method === 'rpc' && ops.rpc === 'recover_identity') {
+        rpcArgs.push(ops.args);
+        return { data: { id: '88888', display_name: '老昵称', avatar_color: '#5B8C5A' }, error: null };
       }
       return undefined;
     },
@@ -468,66 +477,45 @@ async function test8_recoverIdentity() {
   await app2.waitInit();
   const beforeId = app2.w.localStorage.getItem('webchat_id');
   assert(beforeId !== '88888', '初始化身份不是原码（模拟已被换码）');
-  const m0 = updates.length;
   res = await app2.w.recoverIdentity('88888');
   assert(res && res.success === true, '找回成功');
-  const rec = updates.slice(m0);
-  assert(rec.length === 2, `两次更新：解绑当前 + 认领原码（实际 ${rec.length} 次）`);
-  assert(rec[0] && rec[0].payload.auth_uid === null &&
-    rec[0].filters.some(f => f[1] === 'id' && f[2] === beforeId) &&
-    rec[0].filters.some(f => f[1] === 'auth_uid' && f[2] === FAKE_UID),
-    '第一步：解绑当前身份（auth_uid 置空，限自己绑定的行）');
-  assert(rec[1] && rec[1].payload.auth_uid === FAKE_UID &&
-    rec[1].filters.some(f => f[1] === 'id' && f[2] === '88888') &&
-    rec[1].filters.some(f => f[1] === 'auth_uid' && f[2] === null),
-    '第二步：认领原码（要求该行未被占用）');
-  assert(rec[1].payload.display_name === undefined, '认领不覆写原身份的昵称列');
+  assert(rpcArgs.length === 1 && rpcArgs[0].p_code === '88888',
+    `调用 recover_identity 且只传原码（实际 ${rpcArgs.length} 次）`);
   assert(app2.w.localStorage.getItem('webchat_id') === '88888', 'localStorage 身份码切换为原码');
   assert(app2.w.localStorage.getItem('webchat_name') === '老昵称', '恢复原身份昵称');
   assert(app2.w.localStorage.getItem('webchat_color') === '#5B8C5A', '恢复原头像颜色');
+  assert(app2.client()._calls.filter(c => c.table === 'users' && c.method === 'update').length === 0,
+    '不再从前端直接改 users（解绑/认领只在服务端函数内做）');
   app2.cleanup();
 
-  // 8c: 失败路径 — 原码不可用（未解绑/不存在）→ 回滚当前身份，localStorage 不变
-  const updates3 = [];
+  // 8c: 失败路径 — 原码不可用（仍被占用/不存在）→ 服务端事务整体回滚，本地身份码不变
   const app3 = createApp({
     hooks: (table, ops) => {
-      if (table === 'users' && ops.method === 'update') {
-        updates3.push({ payload: ops.payload, filters: ops.filters });
-        if (ops.filters.some(f => f[0] === 'eq' && f[1] === 'id' && f[2] === '88888')) {
-          return { data: [], error: null }; // 认领匹配 0 行：原码仍被占用或不存在
-        }
-        return { data: [], error: null };
+      if (ops.method === 'rpc' && ops.rpc === 'recover_identity') {
+        return { data: null, error: { code: 'P0001', message: 'code_unavailable', details: null, hint: null } };
       }
       return undefined;
     },
   });
   await app3.waitInit();
   const id3 = app3.w.localStorage.getItem('webchat_id');
-  const m3 = updates3.length;
   res = await app3.w.recoverIdentity('88888');
-  assert(res && res.error === '该身份码不存在或仍被占用，请确认后重试', '认领失败返回明确错误');
-  assert(app3.w.localStorage.getItem('webchat_id') === id3, '失败时身份码保持不变（不触发换码）');
-  const rec3 = updates3.slice(m3);
-  assert(rec3.length === 3, `三次更新：解绑 + 尝试认领 + 回滚（实际 ${rec3.length} 次）`);
-  assert(rec3[2] && rec3[2].payload.auth_uid === FAKE_UID &&
-    rec3[2].filters.some(f => f[1] === 'id' && f[2] === id3) &&
-    rec3[2].filters.some(f => f[1] === 'auth_uid' && f[2] === null),
-    '回滚：重新绑定当前身份');
+  assert(res && res.error === '该身份码不存在或仍被占用，请确认后重试', '原码不可用返回明确错误');
+  assert(app3.w.localStorage.getItem('webchat_id') === id3,
+    '失败时身份码保持不变（服务端已回滚，不在前端补写）');
   app3.cleanup();
 
-  // 8d: 解绑失败时透出错误码、服务端详情与实际请求参数（定位 42501 用）
+  // 8d: 其它服务端错误（如函数未创建）→ 透出错误码与 message/details/hint
   const app4 = createApp({
     hooks: (table, ops) => {
-      if (table === 'users' && ops.method === 'update' &&
-          ops.payload && ops.payload.auth_uid === null &&
-          ops.filters.some(f => f[1] === 'id')) {
+      if (ops.method === 'rpc' && ops.rpc === 'recover_identity') {
         return {
           data: null,
           error: {
-            code: '42501',
-            message: 'new row violates row-level security policy for table "users"',
-            details: 'Failing row has id = 99999',
-            hint: 'See policy documentation',
+            code: '42883',
+            message: 'function public.recover_identity(text) does not exist',
+            details: null,
+            hint: 'run supabase-setup.sql',
           },
         };
       }
@@ -535,17 +523,23 @@ async function test8_recoverIdentity() {
     },
   });
   await app4.waitInit();
-  const curId4 = app4.w.localStorage.getItem('webchat_id');
   const r4 = await app4.w.recoverIdentity('88888');
-  assert(r4 && r4.error && r4.error.startsWith('解绑当前身份失败（42501）'),
-    '解绑失败：错误信息开头带服务端错误码');
-  assert(r4.error.includes('new row violates row-level security policy') &&
-    r4.error.includes('Failing row has id = 99999') &&
-    r4.error.includes('See policy documentation'),
-    '解绑失败：透出 message / details / hint 全部服务端字段');
-  assert(r4.error.includes(`参数 id=${curId4} uid=${FAKE_UID}`),
-    '解绑失败：附带实际请求参数 id 与 uid');
+  assert(r4 && r4.error && r4.error.startsWith('找回失败（42883）'),
+    '未知错误：错误信息开头带服务端错误码');
+  assert(r4.error.includes('does not exist') && r4.error.includes('run supabase-setup.sql'),
+    '未知错误：透出 message 与 hint');
   app4.cleanup();
+
+  // 8e: 启动清理 — 历史残留绑定走 unbind_identity(p_keep=当前身份码)，不直接改 users
+  const app5 = createApp();
+  await app5.waitInit();
+  const unbinds = app5.client()._calls.filter(c => c.method === 'rpc' && c.rpc === 'unbind_identity');
+  assert(unbinds.length === 1, `启动时调用一次 unbind_identity（实际 ${unbinds.length} 次）`);
+  assert(unbinds[0] && unbinds[0].args && unbinds[0].args.p_keep === app5.w.localStorage.getItem('webchat_id'),
+    '解绑时用 p_keep 保留当前身份码');
+  assert(app5.client()._calls.filter(c => c.table === 'users' && c.method === 'update').length === 0,
+    '启动清理不再直接 update users');
+  app5.cleanup();
 }
 
 async function test9_maintenanceNotice() {
