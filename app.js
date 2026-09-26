@@ -724,12 +724,15 @@ async function loadMessages(convId) {
     .from('messages')
     .select('id, sender_id, content, msg_type, created_at')
     .eq('conversation_id', convId)
-    .order('created_at', { ascending: true })
+    .order('created_at', { ascending: false })
     .limit(500);
 
   if (error) { console.error('Load messages error:', error); return state.messages[convId] || []; }
 
-  state.messages[convId] = data || [];
+  // 降序取「最新」500 条，再反转成升序交给渲染（renderMessages 按数组顺序输出）。
+  // 不能写成 ascending + limit：那样拿到的是最早的 500 条，会话一旦超过 500 条，
+  // 之后的新消息永远进不了界面，而每次打开会话又会把 state 覆盖回那批老消息。
+  state.messages[convId] = (data || []).slice().reverse();
   return state.messages[convId];
 }
 
@@ -1144,6 +1147,17 @@ async function sendMessage(content) {
 // ---------- 实时消息（轮询方案）----------
 let _pollTimer = null;
 let _lastPollTime = null;
+let _pollInFlight = false;
+
+// 重置轮询时间基准。
+// created_at 是服务端时间，而基准取自本机时钟：本机时钟只要比服务端快，
+// 这段偏差里产生的消息就会被 .gt() 永久挡在外面 —— 基准只会随取到的行前进，
+// 自己不会回退。所以这里主动回退一个安全余量，重叠取到的旧消息由 pollMessages
+// 的 id 去重兜掉（只是多花一点带宽，不会重复显示）。
+const POLL_OVERLAP_MS = 30000;
+function resetPollBaseline() {
+  _lastPollTime = new Date(Date.now() - POLL_OVERLAP_MS).toISOString();
+}
 
 function subscribeRealtime() {
   // 先清理旧的 Broadcast 频道
@@ -1153,14 +1167,14 @@ function subscribeRealtime() {
   state.channels = {};
 
   // 启动轮询
-  _lastPollTime = new Date().toISOString();
+  resetPollBaseline();
   clearInterval(_pollTimer);
   _pollTimer = setInterval(pollMessages, 3000);
 }
 
 function refreshSubscription() {
   // 更新轮询时间基准（会话变化后重新开始）
-  _lastPollTime = new Date().toISOString();
+  resetPollBaseline();
 }
 
 // 好友/申请状态同步：签名变更检测（未变直接返回，防 3s 闪烁）
@@ -1197,53 +1211,66 @@ async function pollContacts() {
 }
 
 async function pollMessages() {
-  // H8：好友状态同步必须先于下面两个 early-return —— 无会话的新用户也要收到申请
-  await pollContacts();
-  if (!state.supabase || state.conversations.length === 0) return;
+  // 上一轮还没回来就跳过这一轮：setInterval 不等待上一次结束，慢查询会让两次
+  // 请求用同一个时间基准取回同一批消息。去重能兜住重复显示，但并发请求本身
+  // 是白花的配额，这里从源头挡掉。
+  if (_pollInFlight) return;
+  _pollInFlight = true;
+  try {
+    // H8：好友状态同步必须先于下面两个 early-return —— 无会话的新用户也要收到申请
+    await pollContacts();
+    if (!state.supabase || state.conversations.length === 0) return;
 
-  const convIds = state.conversations.map(c => c.id);
+    const convIds = state.conversations.map(c => c.id);
 
-  const { data, error } = await state.supabase
-    .from('messages')
-    .select('id, conversation_id, sender_id, content, msg_type, created_at')
-    .in('conversation_id', convIds)
-    .gt('created_at', _lastPollTime)
-    .neq('sender_id', state.myId)
-    .order('created_at', { ascending: true });
+    const { data, error } = await state.supabase
+      .from('messages')
+      .select('id, conversation_id, sender_id, content, msg_type, created_at')
+      .in('conversation_id', convIds)
+      .gt('created_at', _lastPollTime)
+      .neq('sender_id', state.myId)
+      .order('created_at', { ascending: true });
 
-  if (error || !data || data.length === 0) return;
+    if (error || !data || data.length === 0) return;
 
-  // 更新时间基准
-  _lastPollTime = data[data.length - 1].created_at;
+    // 更新时间基准。即使下面这批全被判成重复也要推进，否则会一直重复拉同一段。
+    _lastPollTime = data[data.length - 1].created_at;
 
-  // 按会话分组处理
-  const byConv = {};
-  data.forEach(msg => {
-    if (!byConv[msg.conversation_id]) byConv[msg.conversation_id] = [];
-    byConv[msg.conversation_id].push(msg);
-  });
+    // 按会话分组处理
+    const byConv = {};
+    data.forEach(msg => {
+      if (!byConv[msg.conversation_id]) byConv[msg.conversation_id] = [];
+      byConv[msg.conversation_id].push(msg);
+    });
 
-  Object.entries(byConv).forEach(([convId, msgs]) => {
-    if (!state.messages[convId]) state.messages[convId] = [];
-    state.messages[convId].push(...msgs);
+    Object.entries(byConv).forEach(([convId, msgs]) => {
+      if (!state.messages[convId]) state.messages[convId] = [];
+      // 按 id 去重：基准回退安全余量后必然重叠取到已显示过的消息
+      const known = new Set(state.messages[convId].map(m => m.id));
+      const fresh = msgs.filter(m => !known.has(m.id));
+      if (fresh.length === 0) return;
+      state.messages[convId].push(...fresh);
 
-    const conv = state.conversations.find(c => c.id === convId);
+      const conv = state.conversations.find(c => c.id === convId);
 
-    if (state.currentConvId === convId) {
-      renderMessages(convId);
-      scrollMessagesToBottom();
-    } else {
-      // 累加未读消息数
-      if (!state.unreadCounts[convId]) state.unreadCounts[convId] = 0;
-      state.unreadCounts[convId] += msgs.length;
-      const lastMsg = msgs[msgs.length - 1];
-      toast(`新消息: ${lastMsg.content.slice(0, 30)}`);
-      const sender = conv?.members.find(m => m.user_id === lastMsg.sender_id);
-      notify.send(sender?.display_name || '新消息', lastMsg.content, convId);
-    }
-  });
+      if (state.currentConvId === convId) {
+        renderMessages(convId);
+        scrollMessagesToBottom();
+      } else {
+        // 累加未读消息数
+        if (!state.unreadCounts[convId]) state.unreadCounts[convId] = 0;
+        state.unreadCounts[convId] += fresh.length;
+        const lastMsg = fresh[fresh.length - 1];
+        toast(`新消息: ${lastMsg.content.slice(0, 30)}`);
+        const sender = conv?.members.find(m => m.user_id === lastMsg.sender_id);
+        notify.send(sender?.display_name || '新消息', lastMsg.content, convId);
+      }
+    });
 
-  loadConversations();
+    await loadConversations();
+  } finally {
+    _pollInFlight = false;
+  }
 }
 
 // 已废弃，保留空函数避免报错

@@ -49,7 +49,10 @@ function makeBuilder(table, hooks, calls) {
     in(c, v) { ops.filters.push(['in', c, v]); return b; },
     gt(c, v) { ops.filters.push(['gt', c, v]); return b; },
     or(c) { ops.filters.push(['or', c]); return b; },
-    order() { return b; }, limit() { return b; },
+    // 记录排序/条数：T13 要断言「取最新 500 条」而不是「取最早 500 条」，
+    // 早先这里是不记录的空实现，所以那个方向写反了也没被测试发现
+    order(col, o) { ops.order = { column: col, ...(o || {}) }; return b; },
+    limit(n) { ops.limit = n; return b; },
     single() { ops.single = true; return b; },
     maybeSingle() { ops.single = true; return b; },
     then(onFulfilled, onRejected) {
@@ -1016,6 +1019,98 @@ async function test12_identityHardening() {
   app2.cleanup();
 }
 
+// T13：消息窗口方向 + 轮询去重
+// 这两个 bug 都不报错、不崩，只是「用久了消息就不见了」——必须有测试钉住
+async function test13_messageWindowAndPolling() {
+  console.log('\n[T13] 消息窗口与轮询：取最新而非最早 500 条 + 轮询按 id 去重');
+  // 这两个 bug 都不报错、不崩，只是「用久了消息就不见了」，必须有测试钉住。
+  // state 是 app.js 里的 const，不在全局作用域（eval 的词法声明不外泄），
+  // 所以这里只能走应用自己的流程：让假后端喂数据 → loadConversations 填充 state
+  // → 点侧栏 .conv-item 触发 openConversation。
+
+  const CONV = 'conv-1';
+  // loadMessages 的返回：真实 PostgREST 在 ascending:false 下就是从新到旧
+  const DESC = [
+    { id: 'm3', conversation_id: CONV, sender_id: '67890', content: '第三条', msg_type: 'text', created_at: '2026-01-03T00:00:00Z' },
+    { id: 'm2', conversation_id: CONV, sender_id: '67890', content: '第二条', msg_type: 'text', created_at: '2026-01-02T00:00:00Z' },
+    { id: 'm1', conversation_id: CONV, sender_id: '67890', content: '第一条', msg_type: 'text', created_at: '2026-01-01T00:00:00Z' },
+  ];
+  // 轮询返回：一条新的 m4，外加一条已经显示过的 m2（基准回退安全余量后必然重叠）
+  const POLL = [
+    { id: 'm2', conversation_id: CONV, sender_id: '67890', content: '第二条', msg_type: 'text', created_at: '2026-01-02T00:00:00Z' },
+    { id: 'm4', conversation_id: CONV, sender_id: '67890', content: '第四条', msg_type: 'text', created_at: '2026-01-04T00:00:00Z' },
+  ];
+
+  const app = createApp({ hooks: (table, ops) => {
+    if (table === 'conversation_members' && ops.method === 'select') {
+      // 第一处查询：我参与了哪些会话；第二处：把这些会话的成员列出来
+      if ((ops.filters || []).some(f => f[0] === 'eq' && f[1] === 'user_id')) {
+        return { data: [{ conversation_id: CONV }], error: null };
+      }
+      return { data: [
+        { conversation_id: CONV, user_id: ACCOUNT_CODE, role: 'member',
+          users: { display_name: '我', avatar_color: '#4A90D9' } },
+        { conversation_id: CONV, user_id: '67890', role: 'member',
+          users: { display_name: '对方', avatar_color: '#999999' } },
+      ], error: null };
+    }
+    if (table === 'conversations' && ops.method === 'select') {
+      return { data: [{ id: CONV, type: 'direct', name: null, created_by: ACCOUNT_CODE }], error: null };
+    }
+    if (table === 'messages' && ops.method === 'select') {
+      const f = ops.filters || [];
+      if (f.some(x => x[0] === 'gt')) return { data: POLL, error: null };   // pollMessages
+      if (f.some(x => x[0] === 'in')) return { data: [], error: null };     // 其他聚合查询
+      return { data: DESC, error: null };                                   // loadMessages
+    }
+    return undefined;
+  }});
+
+  const done = await app.waitInit();
+  assert(!!done, '初始化完成');
+
+  const item = app.w.document.querySelector('.conv-item');
+  assert(!!item, '会话出现在侧栏（loadConversations 走通）');
+  if (!item) { app.cleanup(); return; }
+  item.dispatchEvent(new app.w.MouseEvent('click', { bubbles: true }));
+  await waitFor(() => app.client()._calls.some(c =>
+    c.table === 'messages' && c.method === 'select' && !(c.filters || []).some(f => f[0] === 'gt')));
+
+  const msgSel = app.client()._calls.find(c =>
+    c.table === 'messages' && c.method === 'select' && !(c.filters || []).some(f => f[0] === 'gt'));
+  assert(!!msgSel, '打开会话后查询了消息');
+  assert(!!msgSel.order && msgSel.order.column === 'created_at' && msgSel.order.ascending === false,
+    `按 created_at 降序取（拿到的才是最新窗口，实际 ${JSON.stringify(msgSel.order)}）`);
+  assert(msgSel.limit === 500, `条数上限 500（实际 ${msgSel.limit}）`);
+
+  const ids = [...app.w.document.getElementById('messageList').children].map(el => el.dataset.msgId);
+  assert(ids.join(',') === 'm1,m2,m3',
+    `服务端降序返回，界面仍按升序展示（实际 ${ids.join(',')}）`);
+
+  // 轮询：m4 是新消息，m2 是重复的
+  await app.w.pollMessages();
+  const ids2 = [...app.w.document.getElementById('messageList').children].map(el => el.dataset.msgId);
+  assert(ids2.join(',') === 'm1,m2,m3,m4',
+    `轮询拿到的新消息追加在末尾（实际 ${ids2.join(',')}）`);
+
+  // 时间基准取自本机时钟，而 created_at 是服务端时间：不回退余量的话，
+  // 本机时钟比服务端快多少，那段偏差内的消息就被永久挡在 .gt() 之外
+  const pollCall = app.client()._calls.find(c =>
+    c.table === 'messages' && c.method === 'select' && (c.filters || []).some(f => f[0] === 'gt'));
+  const gtVal = pollCall && pollCall.filters.find(f => f[0] === 'gt')[2];
+  const backMs = Date.now() - new Date(gtVal).getTime();
+  assert(backMs >= 20000,
+    `轮询基准回退了安全余量（实际回退 ${Math.round(backMs / 1000)}s）`);
+
+  // 再轮询一次：同样的返回不该造成任何重复
+  await app.w.pollMessages();
+  const ids3 = [...app.w.document.getElementById('messageList').children].map(el => el.dataset.msgId);
+  assert(ids3.join(',') === 'm1,m2,m3,m4',
+    `重复消息按 id 去重，不会重复插入（实际 ${ids3.join(',')}）`);
+
+  app.cleanup();
+}
+
 (async () => {
   try {
     await test0_loggedOut();
@@ -1031,6 +1126,7 @@ async function test12_identityHardening() {
     await test10_accountAuth();
     await test11_guide();
     await test12_identityHardening();
+    await test13_messageWindowAndPolling();
   } catch (e) {
     failed++;
     console.log('\n💥 测试套件异常:', e.stack || e);
