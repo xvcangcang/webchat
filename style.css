@@ -364,6 +364,21 @@ body {
 
 .empty-state .hint { font-size: 12px; }
 
+/* 未登录首屏：登录/注册按钮组 + 找回身份文字链 */
+.auth-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.auth-link {
+  color: var(--primary);
+  font-size: 12px;
+  text-decoration: none;
+}
+
+.auth-link:hover { text-decoration: underline; }
+
 .sidebar-footer {
   padding: 8px 16px;
   text-align: center;
@@ -628,7 +643,8 @@ body {
   font-weight: 500;
 }
 
-.modal-body input[type="text"] {
+.modal-body input[type="text"],
+.modal-body input[type="password"] {
   width: 100%;
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -639,7 +655,8 @@ body {
   transition: border-color var(--transition);
 }
 
-.modal-body input[type="text"]:focus {
+.modal-body input[type="text"]:focus,
+.modal-body input[type="password"]:focus {
   border-color: var(--primary);
 }
 
@@ -1020,8 +1037,10 @@ body {
 [data-theme="dark"] .chat-input-area textarea:focus { border-color: var(--primary); }
 [data-theme="dark"] .modal { background: #222; }
 [data-theme="dark"] .modal-header { border-bottom-color: #333; }
-[data-theme="dark"] .modal-body input[type="text"] { background: #333; color: #e8e8e8; border-color: #444; }
-[data-theme="dark"] .modal-body input[type="text"]:focus { border-color: var(--primary); }
+[data-theme="dark"] .modal-body input[type="text"],
+[data-theme="dark"] .modal-body input[type="password"] { background: #333; color: #e8e8e8; border-color: #444; }
+[data-theme="dark"] .modal-body input[type="text"]:focus,
+[data-theme="dark"] .modal-body input[type="password"]:focus { border-color: var(--primary); }
 [data-theme="dark"] .modal-footer { border-top-color: #333; }
 [data-theme="dark"] .btn-secondary { background: #333; color: #e0e0e0; }
 [data-theme="dark"] .btn-secondary:hover { background: #444; }
@@ -1139,6 +1158,14 @@ body {
 .recover-row .btn { flex-shrink: 0; padding: 0 18px; }
 
 .settings-actions { margin-top: 24px; }
+
+/* 设置 → 个人信息 → 账号区按钮行 */
+.account-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
 
 /* Color picker */
 .color-picker {
