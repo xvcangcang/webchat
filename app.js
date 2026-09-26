@@ -5,6 +5,8 @@
 // ---------- 全局状态 ----------
 const state = {
   supabase: null,
+  auth: null,             // resolveSession() 的结果：{ state, uid, email, code }
+  authMode: 'login',      // 账号弹窗模式：login / register / upgrade / password
   myId: null,
   myName: '',
   myColor: '',
@@ -208,6 +210,11 @@ function renderLoggedOut(hint) {
   $('conversationList').innerHTML = `<div class="empty-state">
     <p>未登录</p>
     <p class="hint">${escapeHtml(hint || '注册或登录后开始聊天')}</p>
+    <div class="auth-actions">
+      <button class="btn btn-primary" data-auth-action="login">登录</button>
+      <button class="btn btn-secondary" data-auth-action="register">注册账号</button>
+    </div>
+    <p class="hint"><a href="javascript:void(0)" class="auth-link" data-auth-action="recover">我是老用户，找回原身份码</a></p>
   </div>`;
 }
 
@@ -273,8 +280,18 @@ async function recoverIdentity(oldCode) {
   if (!state.supabase) return { error: '未连接服务器，请刷新重试' };
 
   const { data: { session } } = await state.supabase.auth.getSession();
-  const uid = session?.user?.id;
-  if (!uid) return { error: '未获得登录会话，请刷新重试' };
+  let uid = session?.user?.id;
+  // 未登录（新浏览器）时先建一个匿名会话：认领身份需要以某个 uid 去绑定原身份码。
+  // 若认领失败会把这个临时会话退掉，不给用户留下半个状态。
+  let tempSession = false;
+  if (!uid) {
+    const anon = await state.supabase.auth.signInAnonymously();
+    uid = anon.data?.user?.id;
+    if (anon.error || !uid) {
+      return { error: `无法建立临时会话：${anon.error?.message || '请检查网络后重试'}` };
+    }
+    tempSession = true;
+  }
 
   // 服务端一个事务内：腾出当前绑定 + 认领原身份（任一步失败整体回滚，不留半个状态）
   const { data, error } = await state.supabase
@@ -282,13 +299,19 @@ async function recoverIdentity(oldCode) {
 
   if (error) {
     console.error('找回身份失败', { myId: state.myId, uid, code: oldCode, error });
+    const rollback = async () => {
+      if (tempSession) { try { await state.supabase.auth.signOut(); } catch (e) {} }
+    };
     const msg = String(error.message || '');
     if (msg.includes('code_unavailable')) {
+      await rollback();
       return { error: '该身份码不存在或仍被占用，请确认后重试' };
     }
     if (msg.includes('not_authenticated')) {
+      await rollback();
       return { error: '未获得登录会话，请刷新重试' };
     }
+    await rollback();
     // 其它错误（如函数未创建）透出服务端 message/details/hint，便于定位
     const bits = [msg, error.details, error.hint]
       .filter(v => v != null && String(v).trim() !== '')
@@ -309,6 +332,190 @@ async function recoverIdentity(oldCode) {
   localStorage.setItem('webchat_id', oldCode);
   location.reload();
   return { success: true };
+}
+
+// ---------- 账号系统：注册 / 登录 / 设置密码 / 退出登录 ----------
+// 身份码即账号名，映射到合成邮箱 <身份码>@xvcangcang.github.io，密码由 Supabase Auth 托管
+// （bcrypt 加密、自带登录限流），我们库里不存任何密码。
+// 注册 = 两步：auth.signUp 建号 → INSERT users 行；第二步失败必须 signOut 回滚，
+// 否则会留下一个"有账号没身份"的孤儿（它的身份码还被占着，本人却进不来）。
+const MIN_PASSWORD_LEN = 8;
+
+// 把 Supabase 的错误翻译成用户能看懂的话
+function authErrorText(error) {
+  const code = String(error?.code || '');
+  const msg = String(error?.message || '');
+  if (code === 'user_already_exists' || /already registered|already exists/i.test(msg)) {
+    return '该身份码已被注册，换一个试试';
+  }
+  if (code === 'email_exists') return '该身份码已被注册，换一个试试';
+  if (code === 'email_address_invalid') return '该身份码不可用，换一个试试';
+  if (code === 'weak_password' || /password should be at least/i.test(msg)) {
+    return `密码太短，至少要 ${MIN_PASSWORD_LEN} 位`;
+  }
+  if (code === 'invalid_credentials' || /invalid login credentials/i.test(msg)) {
+    return '身份码或密码不正确';
+  }
+  if (code === 'signup_disabled' || /signups not allowed/i.test(msg)) {
+    return '管理员已关闭注册';
+  }
+  if (code === 'over_request_rate_limit' || code === 'over_email_send_rate_limit' || /rate limit/i.test(msg)) {
+    return '操作太频繁，请稍后再试';
+  }
+  if (/fetch|network|load failed/i.test(`${code} ${msg}`)) {
+    return '网络异常，请检查网络后重试';
+  }
+  return `操作失败：${msg || code || '请刷新后重试'}`;
+}
+
+function normalizeCode(input) {
+  const code = String(input || '').trim();
+  if (!/^\d{5,6}$/.test(code)) return { error: '身份码必须是 5-6 位数字' };
+  return { code };
+}
+
+// 注册：建号 + 建身份行。成功/失败都返回 { ... }，成功时内部刷新页面
+async function registerAccount(code, password) {
+  if (!state.supabase) return { error: '未连接服务器，请刷新重试' };
+  const c = normalizeCode(code);
+  if (c.error) return c;
+  if (String(password || '').length < MIN_PASSWORD_LEN) return { error: `密码至少 ${MIN_PASSWORD_LEN} 位` };
+
+  const { data, error } = await state.supabase.auth.signUp({
+    email: emailForCode(c.code),
+    password,
+  });
+  if (error) return { error: authErrorText(error) };
+
+  const uid = data?.user?.id;
+  if (!uid || !data?.session) {
+    // 拿到了用户却没拿到会话 ⇒ 邮箱确认还开着（合成邮箱收不到信，永远激活不了）
+    return { error: '注册未完成：未拿到登录会话，请确认 Supabase 已关闭「Confirm email」' };
+  }
+
+  const ins = await state.supabase.from('users').insert({
+    id: c.code,
+    display_name: state.myName,
+    avatar_color: state.myColor,
+    last_seen: new Date().toISOString(),
+    auth_uid: uid,
+  });
+  if (ins.error) {
+    console.error('注册建身份行失败', ins.error);
+    try { await state.supabase.auth.signOut(); } catch (e) {}   // 回滚，别留孤儿账号
+    const ec = String(ins.error.code || '');
+    if (ec === '23505') return { error: '该身份码已被注册，换一个试试' };
+    if (ec === '42501') return { error: '该身份码已被占用，换一个试试' };
+    return { error: `注册失败（${ec || '未知错误'}）：${ins.error.message || '请刷新后重试'}` };
+  }
+
+  location.reload();
+  return { success: true };
+}
+
+// 登录：身份码 + 密码 ⇒ 任何设备都回到同一个 uid、同一份好友与聊天记录
+async function loginAccount(code, password) {
+  if (!state.supabase) return { error: '未连接服务器，请刷新重试' };
+  const c = normalizeCode(code);
+  if (c.error) return c;
+  if (!password) return { error: '请输入密码' };
+
+  const { error } = await state.supabase.auth.signInWithPassword({
+    email: emailForCode(c.code),
+    password,
+  });
+  if (error) return { error: authErrorText(error) };
+
+  location.reload();
+  return { success: true };
+}
+
+// 老用户升级：给匿名会话补上邮箱 + 密码。uid 不变 ⇒ 好友、会话、消息全都不用动
+async function upgradeToAccount(password) {
+  if (!state.supabase) return { error: '未连接服务器，请刷新重试' };
+  if (!state.myId) return { error: '当前未登录，请先注册或登录' };
+  if (String(password || '').length < MIN_PASSWORD_LEN) return { error: `密码至少 ${MIN_PASSWORD_LEN} 位` };
+
+  const { data, error } = await state.supabase.auth.updateUser({
+    email: emailForCode(state.myId),
+    password,
+  });
+  if (error) return { error: authErrorText(error) };
+
+  // 邮箱必须即时生效：若控制台又打开了邮箱确认，这里立刻暴露，而不是等到换设备登录失败
+  if (codeFromEmail(data?.user?.email) !== state.myId) {
+    return { error: '邮箱未即时生效（控制台可能开启了「Confirm email」），请检查后重试' };
+  }
+
+  location.reload();
+  return { success: true };
+}
+
+// 账号用户改密码（合成邮箱收不到邮件 ⇒ 没有自助找回，只能自己记牢或找管理员重置）
+async function changePassword(password) {
+  if (!state.supabase) return { error: '未连接服务器，请刷新重试' };
+  if (String(password || '').length < MIN_PASSWORD_LEN) return { error: `密码至少 ${MIN_PASSWORD_LEN} 位` };
+
+  const { error } = await state.supabase.auth.updateUser({ password });
+  if (error) return { error: authErrorText(error) };
+  return { success: true, message: '密码已更新，下次登录请用新密码' };
+}
+
+// 退出登录：清掉本机的身份码缓存再刷新（缓存留着会被下个账号的"找回"逻辑捡走）
+async function logoutAccount() {
+  if (!state.supabase) return { error: '未连接服务器，请刷新重试' };
+  const { error } = await state.supabase.auth.signOut();
+  if (error) return { error: `退出失败：${error.message || '请刷新后重试'}` };
+  localStorage.removeItem('webchat_id');
+  location.reload();
+  return { success: true };
+}
+
+// ---------- 账号弹窗 ----------
+const AUTH_MODES = {
+  login: {
+    title: '登录', code: true, confirm: false, submit: '登录',
+    switchText: '还没有账号？去注册',
+    hint: '用身份码和密码登录，好友与聊天记录会自动恢复。',
+  },
+  register: {
+    title: '注册账号', code: true, confirm: true, submit: '注册并登录',
+    switchText: '已有账号？去登录',
+    hint: '身份码就是你的账号名（5-6 位数字），注册后可在任何设备用它登录。忘记密码只能联系管理员重置。',
+  },
+  upgrade: {
+    title: '设置密码', code: false, confirm: true, submit: '设置密码',
+    switchText: '',
+    hint: '设置后这个身份码就变成账号：换浏览器、清缓存都不再丢好友与聊天记录。',
+  },
+  password: {
+    title: '修改密码', code: false, confirm: true, submit: '保存新密码',
+    switchText: '',
+    hint: '合成邮箱收不到邮件，忘记密码只能联系管理员重置，请牢记新密码。',
+  },
+};
+
+function openAuthModal(mode) {
+  const m = AUTH_MODES[mode] ? mode : 'login';
+  const cfg = AUTH_MODES[m];
+  state.authMode = m;
+  $('authTitle').textContent = cfg.title;
+  $('authHint').textContent = cfg.hint;
+  $('authCodeWrap').style.display = cfg.code ? 'block' : 'none';
+  $('btnGenCode').style.display = m === 'register' ? '' : 'none';
+  $('authConfirmWrap').style.display = cfg.confirm ? 'block' : 'none';
+  $('btnAuthSwitch').style.display = cfg.switchText ? '' : 'none';
+  $('btnAuthSwitch').textContent = cfg.switchText;
+  $('btnAuthSubmit').textContent = cfg.submit;
+  $('inputAuthCode').value = '';
+  $('inputAuthPwd').value = '';
+  $('inputAuthPwd2').value = '';
+  $('inputAuthPwd').setAttribute('autocomplete', m === 'login' ? 'current-password' : 'new-password');
+  const fb = $('authFeedback');
+  fb.textContent = '';
+  fb.className = 'modal-feedback';
+  openModal('modalAuth');
+  setTimeout(() => $(cfg.code ? 'inputAuthCode' : 'inputAuthPwd').focus(), 60);
 }
 
 function startHeartbeat() {
@@ -1032,6 +1239,38 @@ function renderMyInfo() {
   }
 }
 
+// 设置 → 个人信息 → 账号区：按当前状态（账号 / 过渡期匿名 / 未登录）切换按钮
+function renderAccountBox() {
+  const box = $('accountBox');
+  if (!box) return;
+  const authState = state.auth ? state.auth.state : AUTH_NONE;
+  const code = escapeHtml(state.myId || '');
+
+  if (authState === AUTH_ACCOUNT) {
+    box.innerHTML = `<p class="settings-hint">已登录账号 <code>${code}</code>。密码由服务器托管，在任何设备用「身份码 + 密码」登录都会回到这个身份。</p>
+      <div class="account-actions">
+        <button class="btn btn-secondary" data-account-action="password">修改密码</button>
+        <button class="btn btn-danger" data-account-action="logout">退出登录</button>
+      </div>`;
+  } else if (authState === AUTH_LEGACY) {
+    box.innerHTML = `<p class="settings-hint">当前身份 <code>${code}</code> 只绑定在这台浏览器上（过渡期的老身份，仍然可以照常用）。<b>设置密码</b>后它就变成账号，换设备、清缓存都不怕丢好友与聊天记录。</p>
+      <div class="account-actions">
+        <button class="btn btn-primary" data-account-action="upgrade">设置密码（推荐）</button>
+        <button class="btn btn-danger" data-account-action="logout">退出登录</button>
+      </div>`;
+  } else {
+    box.innerHTML = `<p class="settings-hint">当前未登录。注册一个身份码，或用它登录。</p>
+      <div class="account-actions">
+        <button class="btn btn-primary" data-account-action="login">登录</button>
+        <button class="btn btn-secondary" data-account-action="register">注册账号</button>
+      </div>`;
+  }
+
+  // 找回身份只对"身份码绑在会话上"的非账号用户有意义；账号用户登录即回到原身份
+  const recoverBlock = $('recoverIdentityBlock');
+  if (recoverBlock) recoverBlock.style.display = authState === AUTH_ACCOUNT ? 'none' : 'block';
+}
+
 function renderConversationList() {
   const list = $('conversationList');
   const filter = $('searchInput').value.toLowerCase();
@@ -1391,7 +1630,8 @@ function bindEvents() {
   // 设置
   $('btnSettings').addEventListener('click', () => {
     $('inputMyName').value = state.myName;
-    $('settingsId').textContent = state.myId;
+    $('settingsId').textContent = state.myId || '------';
+    renderAccountBox();
 
     // 找回身份区：每次打开清空上次输入与提示
     $('inputRecoverId').value = '';
@@ -1555,6 +1795,96 @@ function bindEvents() {
   });
   $('inputRecoverId').addEventListener('keydown', (e) => {
     if (e.key === 'Enter') $('btnRecoverId').click();
+  });
+
+  // ---------- 账号：弹窗提交 / 切换 / 随机生成 ----------
+  // 提交按钮按 state.authMode 分发到四条流程，提交期间禁用按钮防连点
+  async function submitAuthModal() {
+    const fb = $('authFeedback');
+    const fail = (msg) => { fb.textContent = msg; fb.className = 'modal-feedback error'; };
+    fb.textContent = '';
+    fb.className = 'modal-feedback';
+
+    const mode = AUTH_MODES[state.authMode] ? state.authMode : 'login';
+    const cfg = AUTH_MODES[mode];
+    const code = $('inputAuthCode').value.trim();
+    const pwd = $('inputAuthPwd').value;
+    const pwd2 = $('inputAuthPwd2').value;
+
+    if (cfg.code && !code) return fail('请输入身份码');
+    if (!pwd) return fail('请输入密码');
+    if (cfg.confirm && cfg.code && !pwd2) return fail('请再输入一次密码');
+    if (cfg.confirm && pwd !== pwd2) return fail('两次输入的密码不一致');
+
+    const btn = $('btnAuthSubmit');
+    const label = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = '处理中…';
+    try {
+      let res;
+      if (mode === 'register') res = await registerAccount(code, pwd);
+      else if (mode === 'login') res = await loginAccount(code, pwd);
+      else if (mode === 'upgrade') res = await upgradeToAccount(pwd);
+      else res = await changePassword(pwd);
+
+      if (res && res.error) fail(res.error);
+      else if (res && res.success) {
+        // changePassword 不刷新页面（会话仍有效，由函数自己返回 message）；其余三条已在函数内部 reload
+        fb.textContent = res.message || '成功，正在刷新…';
+        fb.className = 'modal-feedback success';
+      }
+    } catch (err) {
+      console.error('账号操作异常', err);
+      fail(`操作失败：${err.message || '请刷新后重试'}`);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = label;
+    }
+  }
+
+  $('btnAuthSubmit').addEventListener('click', submitAuthModal);
+  ['inputAuthCode', 'inputAuthPwd', 'inputAuthPwd2'].forEach(id => {
+    $(id).addEventListener('keydown', (e) => { if (e.key === 'Enter') submitAuthModal(); });
+  });
+
+  // 登录 ⇄ 注册互切（重新打开弹窗以重置标题/输入框/提示）
+  $('btnAuthSwitch').addEventListener('click', () => {
+    openAuthModal(state.authMode === 'register' ? 'login' : 'register');
+  });
+
+  $('btnGenCode').addEventListener('click', () => {
+    $('inputAuthCode').value = genShortId();
+  });
+
+  // 设置 → 账号区：按状态给出的按钮
+  $('accountBox').addEventListener('click', async (e) => {
+    const btn = e.target.closest('[data-account-action]');
+    if (!btn) return;
+    const action = btn.dataset.accountAction;
+
+    if (action === 'logout') {
+      if (!confirm('确定退出登录？退出后需要重新用身份码和密码登录。')) return;
+      const res = await logoutAccount();
+      if (res && res.error) toast(res.error, 'error');   // 成功时函数内部已刷新页面
+      return;
+    }
+
+    // 其余三种都是打开账号弹窗：先关设置，避免两层弹窗叠在一起
+    closeModal('modalSettings');
+    openAuthModal(action);
+  });
+
+  // 未登录首屏空状态：登录 / 注册 / 找回原身份码
+  $('conversationList').addEventListener('click', (e) => {
+    const el = e.target.closest('[data-auth-action]');
+    if (!el) return;
+    const action = el.dataset.authAction;
+    if (action === 'login' || action === 'register') { openAuthModal(action); return; }
+    if (action === 'recover') {
+      // 找回入口在设置里：打开设置并聚焦输入框
+      $('btnSettings').click();
+      setTimeout(() => $('inputRecoverId').focus(), 100);
+    }
   });
 
   $('btnCopyId').addEventListener('click', () => {
