@@ -156,6 +156,55 @@
     </div>
   </div>
 
+  <!-- ======== 模态框：使用指南（首次访问自动弹出，可勾选不再弹出） ======== -->
+  <!-- 勾选框的偏好由 app.js 在 change 时立即写入 localStorage，因此怎么关都不丢 -->
+  <div class="modal-overlay" id="modalGuide" style="display:none">
+    <div class="modal modal-guide">
+      <div class="modal-header">
+        <h3>使用指南</h3>
+        <button class="icon-btn modal-close" data-modal="modalGuide">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+      <div class="modal-body">
+        <p class="settings-hint">30 秒看懂 WebChat 怎么用。随时可在 <b>设置 → 关于 → 查看使用指南</b> 里重新打开。</p>
+        <ol class="guide-steps">
+          <li>
+            <b>注册你的身份码</b>
+            <span>点「注册账号」，自选 5-6 位数字身份码（可点「随机生成」），并设置至少 8 位的密码。身份码就是你的账号名。</span>
+          </li>
+          <li>
+            <b>加好友</b>
+            <span>点右上角 ＋ → 添加好友，输入对方身份码发送申请；对方在 ＋ → 新的朋友 里点「接受」后，双方自动出现聊天。</span>
+          </li>
+          <li>
+            <b>开始聊天 / 建群</b>
+            <span>在左侧列表点好友即可聊天；点 ＋ → 创建群聊，勾选好友建群。</span>
+          </li>
+          <li>
+            <b>换手机、换浏览器？</b>
+            <span>直接点「登录」，用身份码 + 密码进去，好友和聊天记录都在，不用重新加人。</span>
+          </li>
+          <li>
+            <b>老用户还没设过密码？</b>
+            <span>进 设置 → 个人信息 → 账号，点「设置密码」即可升级为账号 —— 好友与聊天记录一条都不会动。</span>
+          </li>
+          <li>
+            <b>找不到原来的身份码 / 忘了密码？</b>
+            <span>设置 → 找回身份 可用原身份码找回好友与记录；<b>忘记密码无法自助重置</b>（收不到验证信），只能联系管理员。</span>
+          </li>
+        </ol>
+      </div>
+      <div class="modal-footer">
+        <label class="guide-optout">
+          <input type="checkbox" id="guideNoMore">
+          不再自动弹出
+        </label>
+        <button class="btn btn-primary" data-modal="modalGuide">知道了</button>
+      </div>
+    </div>
+  </div>
+
   <!-- ======== 模态框：添加好友 ======== -->
   <div class="modal-overlay" id="modalAddContact" style="display:none">
     <div class="modal">
@@ -397,7 +446,10 @@
               <div class="about-row"><span>部署</span><span>GitHub Pages / PocketBase</span></div>
               <div class="about-row"><span>协议</span><span>MIT License</span></div>
             </div>
-            <p class="about-desc">一个轻量级点对点聊天平台，每个浏览器生成唯一身份码，输入身份码即可添加好友聊天。</p>
+            <p class="about-desc">一个轻量级点对点聊天平台。注册一个 5-6 位数字身份码当作账号名，在任意设备登录即可聊天。</p>
+            <div class="settings-actions">
+              <button class="btn btn-secondary" id="btnShowGuide">查看使用指南</button>
+            </div>
           </div>
 
           <!-- 更新日志 -->

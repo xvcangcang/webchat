@@ -518,6 +518,24 @@ function openAuthModal(mode) {
   setTimeout(() => $(cfg.code ? 'inputAuthCode' : 'inputAuthPwd').focus(), 60);
 }
 
+// ---------- 使用指南 ----------
+// 首次访问自动弹出，帮新用户看懂「身份码 + 密码」这套用法。
+// 偏好只存本机（localStorage）：勾了「不再自动弹出」就永远不再打扰，
+// 想再看可以从 设置 → 关于 → 查看使用指南 手动打开。
+const GUIDE_HIDDEN_KEY = 'webchat_guide_hidden';
+
+function openGuide() {
+  const chk = $('guideNoMore');
+  if (chk) chk.checked = localStorage.getItem(GUIDE_HIDDEN_KEY) === '1';   // 打开时同步当前偏好
+  openModal('modalGuide');
+}
+
+function maybeShowGuide() {
+  if (localStorage.getItem(GUIDE_HIDDEN_KEY) === '1') return;
+  if (!$('modalGuide')) return;   // 旧缓存 HTML 兜底
+  openGuide();
+}
+
 function startHeartbeat() {
   setInterval(async () => {
     await state.supabase
@@ -1890,6 +1908,18 @@ function bindEvents() {
     }
   });
 
+  // 使用指南：勾选即写入偏好（不必等关闭 —— 勾完直接点背景关掉也不会丢）
+  $('guideNoMore').addEventListener('change', (e) => {
+    if (e.target.checked) localStorage.setItem(GUIDE_HIDDEN_KEY, '1');
+    else localStorage.removeItem(GUIDE_HIDDEN_KEY);
+  });
+
+  // 设置 → 关于 → 重新打开使用指南（先关设置，避免两层弹窗叠在一起）
+  $('btnShowGuide').addEventListener('click', () => {
+    closeModal('modalSettings');
+    openGuide();
+  });
+
   $('btnCopyId').addEventListener('click', () => {
     if (!state.myId) return;
     navigator.clipboard.writeText(state.myId).then(() => toast('身份码已复制', 'success'));
@@ -2227,6 +2257,7 @@ async function init() {
       : '注册或登录后开始聊天');
     bindEvents();
     hideLoadingScreen();
+    maybeShowGuide();   // 新用户首屏（未登录）正是最需要指南的时候
     return;
   }
 
@@ -2238,6 +2269,7 @@ async function init() {
   bindEvents();
 
   hideLoadingScreen();
+  maybeShowGuide();
 
   toast('连接成功');
 

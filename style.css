@@ -677,6 +677,57 @@ body {
   border-top: 1px solid #eee;
 }
 
+/* ======== 使用指南 ======== */
+/* 需盖过渐隐中的加载屏（z-index 9999），否则开场 400ms 会被白屏压住 */
+#modalGuide { z-index: 10000; }
+
+.modal-guide {
+  display: flex;
+  flex-direction: column;
+  max-height: 85vh;
+}
+
+/* 内容比一屏长，正文自己滚，头尾固定 */
+.modal-guide .modal-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.modal-guide .modal-footer { flex-shrink: 0; }
+
+.guide-steps {
+  margin: 0;
+  padding-left: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.guide-steps li {
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text);
+}
+
+.guide-steps li b { display: block; margin-bottom: 2px; }
+
+.guide-steps li span { color: var(--text-secondary); }
+
+/* 「不再自动弹出」：靠 margin-right:auto 顶到 footer 左侧 */
+.guide-optout {
+  margin-right: auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  user-select: none;
+}
+
+.guide-optout input { cursor: pointer; margin: 0; }
+
 .btn {
   padding: 8px 20px;
   border-radius: 6px;
