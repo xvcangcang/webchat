@@ -1755,6 +1755,9 @@ function bindEvents() {
 
   // 保存个人信息
   $('btnSaveProfile').addEventListener('click', async () => {
+    // 未登录时没有身份行，update 会静默影响 0 行却仍提示「已保存」
+    if (!state.myId) { toast('未登录，请先注册或登录', 'error'); return; }
+
     const newName = $('inputMyName').value.trim();
     if (!newName) { toast('昵称不能为空', 'error'); return; }
 
