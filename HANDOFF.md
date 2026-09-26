@@ -1,7 +1,9 @@
 # WebChat v2.0.0「账号登录」改造 — 交接文档
 
 > 更新：2026-09-26 ｜ 仓库 `xvcangcang/webchat` ｜ 分支 `master`
-> 阅读顺序建议：§0 速览 → §7 现在该做什么 → §9 坑 → 其余按需查
+> 阅读顺序建议：§0 速览 → §7 已完成内容 → §9 坑 → 其余按需查
+>
+> **本改造已全部落地（Phase 1–4）**，见 §0 与 §7。
 >
 > 本文件随仓库公开（无任何密钥：`config.js` 里的 anon key 本就设计为公开，安全边界在 RLS）。
 
@@ -13,14 +15,15 @@
 |---|---|
 | 目标 | 把「打开网页自动分配身份码」改成「**身份码 + 密码** 登录」（身份码 = 账号名） |
 | Phase 0 探针验证 | ✅ 全部通过（2026-09-26） |
-| Phase 1 会话/身份层重写 | ✅ 已提交 `7f1fac3`，**未推送** |
-| Phase 2 注册/登录/升级/退出 + UI | ⚠️ **只写了约一半，工作区未提交** |
-| Phase 3 测试 / Phase 4 文档发版 / Phase 5 收尾 | ⬜ 未开始 |
-| 测试 | `npm test` → **99 通过 / 0 失败**（但新增的账号代码路径**尚未被任何测例覆盖**） |
-| 线上站点 | 仍是 **v1.9.2**（自动分配身份码的老逻辑），正常可用 |
+| Phase 1 会话/身份层重写 | ✅ 完成 `7f1fac3` |
+| Phase 2 注册/登录/升级/退出 + UI | ✅ **完成**（`3cafe9e` `2b55c39` `25277f8` `6841ad5` `f2127fc` `a7d6886`） |
+| Phase 3 测试 | ✅ **完成** `b6685a0`：`npm test` → **160 通过 / 0 失败**（账号流程已全覆盖） |
+| Phase 4 文档发版 | ✅ **完成** `505c634`：README 重写、`changelog.js` + `version.js` → **v2.0.0** |
+| Phase 5 收尾（关匿名登录、删过渡代码） | ⬜ 未开始（计划观察一两周后做，见 §10） |
+| 线上站点 | 随本次推送更新为 **v2.0.0**（账号登录版） |
 
-**⚠️ 现在不要推送。** 理由：Phase 1 一上线，新浏览器首屏就是「未登录」；而 Phase 2 的注册/登录弹窗、按钮绑定还没接完 ——
-线上会出现「未登录 + 点了没反应的按钮」，比现在还糟。**等 Phase 2 补完、测试全绿，再一次性推送 Phase 1 + Phase 2。**
+**执行结果**：Phase 2 的 UI 与绑定已按 §7.2 清单补完，测试与文档同步跟上，**一次性推送 Phase 1–4**，
+因此线上不会出现「未登录 + 点了没反应的按钮」的中间态（原计划的推送风险已消除）。
 
 ---
 
@@ -111,10 +114,10 @@
 | Phase | 内容 | 状态 | 提交 |
 |---|---|---|---|
 | 0 | 探针验证外部前提（关邮箱确认、匿名升级、多设备、撞码信号） | ✅ 通过 | 探针页用完即删，未提交 |
-| 1 | 会话与身份层重写：`state.myId` 由会话派生、删除自动分配 | ✅ 完成 | `7f1fac3`（**未推送**） |
-| 2 | 注册 / 登录 / 设置密码 / 修改密码 / 退出登录 + 弹窗与设置区 UI | ⚠️ **进行中（约一半）** | 未提交 |
-| 3 | 新流程的测试覆盖 | ⬜ 未开始 | — |
-| 4 | README 安全模型重写、`changelog.js` + `version.js` → **v2.0.0** | ⬜ 未开始 | — |
+| 1 | 会话与身份层重写：`state.myId` 由会话派生、删除自动分配 | ✅ 完成 | `7f1fac3` |
+| 2 | 注册 / 登录 / 设置密码 / 修改密码 / 退出登录 + 弹窗与设置区 UI | ✅ 完成 | `3cafe9e` `2b55c39` `25277f8` `6841ad5` `f2127fc` `a7d6886` |
+| 3 | 新流程的测试覆盖 | ✅ 完成（99 → **160** 通过） | `b6685a0` |
+| 4 | README 安全模型重写、`changelog.js` + `version.js` → **v2.0.0** | ✅ 完成 | `505c634` |
 | 5 | 观察一两周后关闭匿名登录、删过渡代码（可选） | ⬜ 未开始 | — |
 
 ---
@@ -148,11 +151,11 @@ const AUTH_ACCOUNT = 'account';  // 账号会话（身份码 + 密码）
 
 ---
 
-## 7. 现在该做什么 —— Phase 2 剩余清单
+## 7. Phase 2/3/4 已完成内容（2026-09-26）
 
-`app.js` 的**逻辑层已经写完（未提交）**，缺的是 UI 与事件绑定。
+> 本节原为「剩余清单」，现已逐项落地。下面的清单保留作**核对用**（每一条都已实现，可对照代码复核）。
 
-### 7.1 app.js 已写入工作区的内容（未提交，供核对）
+### 7.1 Phase 2 逻辑层（`app.js` 账号段）
 
 | 位置 | 内容 |
 |---|---|
@@ -172,7 +175,7 @@ const AUTH_ACCOUNT = 'account';  // 账号会话（身份码 + 密码）
 | `upgrade` | 设置密码（老用户升级） | 隐藏 | 显示 | `upgradeToAccount()`（`updateUser`，uid 不变） |
 | `password` | 修改密码 | 隐藏 | 显示 | `changePassword()` |
 
-### 7.2 还没做（按顺序做完即可）
+### 7.2 UI 与绑定（✅ 已全部完成）
 
 1. **`index.html`**：
    - 新增 `#modalAuth` 弹窗，元素 id 必须是：
@@ -192,33 +195,35 @@ const AUTH_ACCOUNT = 'account';  // 账号会话（身份码 + 密码）
      `recover` → `$('btnSettings').click()` 并聚焦 `#inputRecoverId`
 4. **`app.js` `init()`**：把 `auth` 存进 `state.auth`（**未登录分支也要存**，`renderAccountBox` 依赖它）；
    legacy 老用户一次性提示（`localStorage.webchat_upgrade_hint` 不存在时 toast「在设置里设置密码，换设备也能登录」并写标记）
-5. **`app.js` `btnSaveProfile` 加未登录守卫**（`if (!state.myId) { toast('未登录，请先注册或登录', 'error'); return; }`）
-   —— 上一次想加这行时被打断，**确认没写进去**
-6. **Phase 3 测试**：假客户端补 `auth.signUp` / `signInWithPassword` / `updateUser` / `signOut` / `signInAnonymously`，
-   新增：注册成功、注册撞码（`user_already_exists` 422）、注册建行失败回滚 `signOut`、登录成功、密码错误、
-   老用户升级 uid 不变、退出清缓存、未登录点注册打开弹窗
+5. **`app.js` `btnSaveProfile` 加未登录守卫** —— ✅ 已加（`f2127fc`）
+6. **Phase 3 测试** —— ✅ 已完成（`b6685a0`）：假客户端补了 `auth.signUp` / `signInWithPassword` /
+   `updateUser` / `signOut` / `signInAnonymously`，并给测试环境加了 `virtualConsole`（把 `location.reload()`
+   的 jsdom「Not implemented」噪声转成 `app.reloads()` 计数，用来断言"流程走完并刷新了页面"）与可控 `confirm`。
+   T10 覆盖 10 组场景、61 条断言，全部走真实 DOM 点击（顺带覆盖 `openAuthModal` 与 `bindEvents` 接线）：
+   注册成功 / 撞码 422 / 建行失败回滚 `signOut` / 登录成功 / 密码错误 / 本地校验（格式·长度·两次不一致·必填）/
+   老用户升级走 `updateUser` 且 uid 不变 / 账号区与退出登录（含取消确认）/ 未登录首屏两个入口 + 找回入口聚焦 /
+   弹窗模式切换、随机生成、回车提交、切换清空输入。
 
-### 7.3 收尾
+### 7.3 收尾（✅ 已完成，顺序略有调整）
 
-Phase 2 + 3 全绿后：`git push origin master`（一次性带上 `7f1fac3` + Phase 2 + Phase 3 提交），
-然后 Phase 4 改 README / `changelog.js` / `version.js` 升 **v2.0.0**（破坏性变更）再推一次。
+Phase 2 + 3 全绿后**先把 Phase 4 做完再推**（原计划是先推再发版）——
+这样线上不会出现「v2.0.0 的新逻辑 + 侧栏仍显示 v1.9.2」的中间态。
+`README.md` 重写、`changelog.js` + `version.js` 升 **v2.0.0**（破坏性变更）后，
+一次性推送 Phase 1–4 的全部提交。
 
 ---
 
 ## 8. 当前仓库真实状态
 
 ```
-git status        → M app.js（Phase 2 半成品，243 插入 / 3 删除）
-git log           → 7f1fac3 feat: 身份码改由登录会话派生，取消自动分配   ← 本地已提交，未推送
-                   84dce8d feat: 恢复使用，关闭维护弹窗并升到 v1.9.2      ← origin/master 在此
-未推送提交         → 7f1fac3 + 本文档的提交（本地 master ahead 2）
-远端分支 handoff   → 只放本文件，基于 origin/master（v1.9.2），**不含 Phase 1/2 代码**
-npm test          → 99 通过 / 0 失败（新账号代码尚未覆盖，通过 ≠ 正确）
-线上版本          → v1.9.2，站点 https://xvcangcang.github.io/webchat/ 正常
+git log           → 本次改造的提交（Phase 1–4 + 文档），已推送 origin/master
+                   84dce8d feat: 恢复使用，关闭维护弹窗并升到 v1.9.2   ← 改造前的最后一个提交
+npm test          → 160 通过 / 0 失败（账号流程已被 T10 覆盖）
+线上版本          → v2.0.0（账号登录版），站点 https://xvcangcang.github.io/webchat/
+SQL               → 本次改造未改任何 SQL，supabase-setup.sql 保持原样
 ```
 
-测试数字**全绿不代表 Phase 2 没问题** —— 新写的 `registerAccount` / `loginAccount` 等还没被任何测例碰到，
-且 UI 未接上时它们根本不会被调用。
+`supabase-setup.sql` 一行都没动 —— 所有 RLS 策略本来就锚在 `auth.uid()` 上，账号登录不改变这个语义。
 
 ---
 
@@ -233,12 +238,16 @@ npm test          → 99 通过 / 0 失败（新账号代码尚未覆盖，通�
 4. **撞码有两种**：邮箱已被注册（422 `user_already_exists`）和 `users.id` 已被占（建行 23505）。
    两者都要给出「该身份码已被注册，换一个试试」，且都必须回滚。
 5. **忘记密码无自助通道** ⇒ 由管理员在 Supabase SQL Editor 代改（§10），UI 上已写明。
-6. **推送时机**：Phase 2 完成前不要推（§0）。现在推会让线上首屏出现「未登录 + 无反应按钮」。
+6. **推送时机**：Phase 2 完成前不要推（§0）。本次已按「Phase 2/3/4 全绿后一次性推」处理，不存在中间态。
 7. **别忘 `changePassword` 不刷新页面**（会话仍有效），其它三条流程成功后会 `location.reload()`。
 8. `version.js` 的 `MAINTENANCE_NOTICE` 是维护弹窗总开关，`changelog.js` 与 `version.js` 要同步。
 9. 浏览器强刷（Ctrl+Shift+R）再看效果，避免旧 JS 缓存。
 
 ### 我这个执行环境的限制（给下一个 AI/接手人）
+
+> **2026-09-26 补记**：下一位接手人的环境里 `github.com:443`（SSH）**是通的**，
+> `git ls-remote origin` / `git push` 均正常，无需走 §14 的 REST API 兜底。
+> 下面的限制只描述写下这段时那台机器的网络状况，遇到 `git push` 失败再回来看。
 
 - **`github.com:443` 连不上（`git push` 直接失败），但 `api.github.com` 通**：
   实测 `git push` 连试 3 次全部 `Empty reply from server` / `Failed to connect to github.com:443 after 21s`
@@ -351,7 +360,25 @@ SELECT id, auth_uid, display_name FROM public.users WHERE id = '12345';
 **Phase 1 落地**：身份层重写（§6）→ `npm test` 99/0 → 提交 `7f1fac3`。
 当时**故意没推**：Phase 1 单独上线会让线上首屏变成没有登录入口的「未登录」死胡同。
 
-**本次（当前）**：用户要求把进展整合成交接文档放进文件夹并推送 GitHub ⇒ 即本文件。
+**上一次会话**：用户要求把进展整合成交接文档放进文件夹并推送 GitHub ⇒ 即本文件。
+
+**本次会话（2026-09-26）**：按本文件的 §7.2 清单接着做，把 Phase 2 的 UI/绑定补完，
+一路做到 Phase 4 发版。每步一次提交（共 8 个），全部按文档「改完即提交」的约定执行：
+
+| 步骤 | 提交 | 内容 |
+|---|---|---|
+| Phase 2 UI | `3cafe9e` | `index.html`：`#modalAuth` 弹窗 + 设置账号区 + 找回身份包块 |
+| Phase 2 样式 | `2b55c39` | `style.css`：密码框复用 text 样式（含深色）、`.auth-actions` / `.auth-link` / `.account-actions` |
+| Phase 2 接线 | `25277f8` | `bindEvents()`：账号弹窗提交分发 + 切换 + 随机生成、设置账号区、首屏入口 |
+| Phase 2 收尾 | `6841ad5` | `init()` 存 `state.auth`（未登录分支也存）+ 老用户一次性升级提示 |
+| Phase 2 修补 | `f2127fc` | `btnSaveProfile` 未登录守卫（§7.2 第 5 条） |
+| Phase 2 修补 | `a7d6886` | 确认密码为空的提示更明确（顺手修掉一个含糊条件） |
+| Phase 3 | `b6685a0` | T10 账号流程测试，`npm test` 99 → **160** 通过 |
+| Phase 4 | `505c634` | README 重写、`changelog.js` + `version.js` → v2.0.0 |
+
+实测结论：T10 的 61 条断言**首次运行即全绿**，没有出现"接完 UI 才发现逻辑层设计不合用"的返工；
+`app.js` 的账号逻辑层（上一次会话留下的未提交代码）**无需修改**，只补了上面两条边界修正。
+另外做了一次静态自检：`index.html` 无重复 id，`app.js` 里 77 个 `$('...')` 引用全部能在 HTML 中找到。
 
 > 期间我在给 `btnSaveProfile` 加未登录守卫时被用户打断（那次编辑**没有生效**，见 §7.2 第 5 条）。
 
@@ -375,9 +402,10 @@ SELECT id, auth_uid, display_name FROM public.users WHERE id = '12345';
 
 ## 13. 一句话交接
 
-> 逻辑层（Phase 1）已提交、Phase 2 的 app.js 逻辑已写好但**未提交**，
-> **缺的是 index.html 的注册/登录弹窗与账号区、style.css 样式、bindEvents 里的四组绑定、init 里存 `state.auth`** ——
-> 按 §7.2 清单补完 → `npm test` 全绿 → 推送。**在此之前不要推送**，否则线上首屏会出现「未登录 + 无反应按钮」。
+> 「身份码 + 密码」账号登录改造 **Phase 1–4 已全部完成并推送**（v2.0.0，`npm test` 160 通过 / 0 失败）。
+> 剩下只有**可选的 Phase 5**：观察一两周、确认老用户都已设置密码后，关闭匿名登录并删掉过渡代码
+> （`recoverIdentity` / `recoverIdentityBlock` / `AUTH_LEGACY` 分支 / `unbind_identity` + `recover_identity` 两个服务端函数）。
+> 在那之前 **不要关匿名登录**（§9 第 2 条）。
 
 ---
 
